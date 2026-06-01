@@ -7,11 +7,32 @@ import { createTimeoutError } from "../utils/timeout.js";
  * 批量结算 pendingFinalize 集合中的所有任务。
  * 由 scheduleFinalizeCheck 的 setImmediate 回调调用。
  *
+ * 在结算前排空 pendingStderr 缓冲，将之前无法归因的 stderr
+ * 通过零行归因机制正确分配到失败的任务上。
+ *
  * @param {Set<object>} tasks - pendingFinalizeTasks 集合
  * @param {(task: object, error: Error | null, value: any) => void} settle
  * @param {() => void} pumpQueue
+ * @param {string[]} [pendingStderr] - 待处理的 stderr 缓冲
  */
-export function finalizePendingTasks(tasks, settle, pumpQueue) {
+export function finalizePendingTasks(tasks, settle, pumpQueue, pendingStderr, inflight) {
+	const hasStderrBuffer = pendingStderr && pendingStderr.length > 0;
+	// 排空 pendingStderr 缓冲，尝试零行归因
+	if (hasStderrBuffer) {
+		for (const chunk of pendingStderr) {
+			for (const t of tasks) {
+				// 归因给所有零行 query 任务（可能有多个失败 SQL 在同一 batch）
+				if (t.kind === "query" && t.rows.length === 0) {
+					t.stderrText += chunk;
+				}
+			}
+		}
+		// 仅当无更多 inflight 任务时才清除缓冲（否则保留以供后续零行任务使用）
+		if (!inflight || inflight.count === 0) {
+			pendingStderr.length = 0;
+		}
+	}
+
 	for (const task of tasks) {
 		if (task.stderrText) {
 			settle(task, new Error(task.stderrText.trim()), undefined);
@@ -30,6 +51,7 @@ export function finalizePendingTasks(tasks, settle, pumpQueue) {
 
 		settle(task, null, undefined);
 	}
+
 	tasks.clear();
 	pumpQueue();
 }
@@ -87,24 +109,42 @@ export function createSweeper({ inflight, sweepIntervalMs, handleTaskTimeout }) 
 /**
  * 创建 pendingFinalize 结算调度器。
  * 通过 setImmediate 延迟一帧执行 finalizePendingTasks，给 stderr chunk 到达的时间窗口。
+ * 若 finalizePendingTasks 中有零行 query 等待 stderr，自动重新调度下一轮 finalize。
  *
  * @param {{
  *   pendingFinalizeTasks: Set<object>,
  *   settleTask: (task: object, error: Error | null, value: any) => void,
  *   pumpQueue: () => void,
+ *   pendingStderr?: string[],
+ *   inflight?: import("./inflightTracker.js").InflightTracker,
  * }} params
  * @returns {() => void}
  */
-export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: settle, pumpQueue }) {
+export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: settle, pumpQueue, pendingStderr, inflight }) {
 	let scheduled = false;
-	return () => {
+	let immediate = null;
+	let cancelled = false;
+	const cancel = () => {
+		cancelled = true;
+		if (immediate) {
+			clearImmediate(immediate);
+			immediate = null;
+		}
+	};
+	const check = () => {
+		if (cancelled) return;
 		if (scheduled) return;
+		if (pendingFinalizeTasks.size === 0) return;
 		scheduled = true;
-		setImmediate(() => {
+		immediate = setImmediate(() => {
+			immediate = null;
+			if (cancelled) return;
+			finalizePendingTasks(pendingFinalizeTasks, settle, pumpQueue, pendingStderr, inflight);
 			scheduled = false;
-			finalizePendingTasks(pendingFinalizeTasks, settle, pumpQueue);
 		});
 	};
+	check.cancel = cancel;
+	return check;
 }
 
 /**
@@ -253,24 +293,38 @@ export function handleSentinelTask(task, { settleTask, pendingFinalizeTasks, sch
  * 统一采用 PipelineEngine 的精细归因策略：
  *   1. 零行归因 — pendingFinalize 中 rows.length === 0 的 query 极可能是失败源
  *   2. WAL batch — 整个事务回滚，传播到 batch 内所有任务
- *   3. 非 WAL batch — 传播到 pendingFinalize 中其他任务 + 第一个 inflight 任务
- *      （不传播到后续 inflight 任务，避免 macOS 上因 pipe 时序导致成功查询被误杀）
+ *   3. 非 WAL batch（多任务） — 无法确定来源时缓冲到 pendingStderr，由后续
+ *      finalizePendingTasks 中的零行归因机制正确归因，避免 stderr 错误地
+ *      归因给第一个 inflight 任务（#1957 随机测试报错修复）
+ *   4. 非 WAL batch（单任务或 primary 为 pendingFinalize）— 归因给该任务
  *
  * @param {string} chunk - stderr 文本块
  * @param {{
  *   inflight: import("./inflightTracker.js").InflightTracker,
  *   pendingFinalizeTasks: Set<object>,
  *   logger?: { error?: (msg: string) => void },
+ *   pendingStderr?: string[],
  * }} params
  */
-export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logger }) {
+export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logger, pendingStderr }) {
 	const inflightFirst = inflight.first;
 	const firstPending = pendingFinalizeTasks.values().next().value;
 
-	// ── 优先归因给 inflight 任务 ──
-	// inflight 任务正在 sqlite3 中执行，stderr 最可能来自它。
-	// pendingFinalize 中的任务已收到 sentinel 并完成执行，不应被 stderr 误伤。
-	// 仅当无 inflight 任务时，才使用 pendingFinalize 中的第一个任务作为兜底。
+	// ── 零行归因（优先）──
+	// sqlite3 对失败 SQL 只输出 stderr 不输出数据行。
+	// pendingFinalize 中 rows.length === 0 的 query 全部可能是失败源。
+	// 此 stderr chunk 归因给所有零行任务（而非仅第一个匹配），
+	// 确保 batch 中所有失败任务都收到错误消息。
+	let zeroRowMatch = false;
+	for (const t of pendingFinalizeTasks) {
+		if (t.kind === "query" && t.rows.length === 0) {
+			t.stderrText += chunk;
+			zeroRowMatch = true;
+		}
+	}
+	if (zeroRowMatch) return;
+
+	// ── 选择 primary 任务 ──
 	const task = inflightFirst ?? firstPending;
 
 	if (!task) {
@@ -278,23 +332,15 @@ export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logge
 		return;
 	}
 
-	// ── 零行归因（不受 inflight 有无影响）──
-	// sqlite3 对失败的 SQL 不输出任何 stdout 数据行，只有 stderr。
-	// 因此 pendingFinalize 中 rows.length === 0 的 query 极可能失败源。
-	// 仅归因给这些任务，不传播到其他成功任务。
-	for (const t of pendingFinalizeTasks) {
-		if (t.kind === "query" && t.rows.length === 0) {
-			t.stderrText += chunk;
-			return;
-		}
+	// ── 非 batch 任务（standalone）：直接归因 ──
+	if (task.batchId == null) {
+		task.stderrText += chunk;
+		return;
 	}
 
-	// ── 安全兜底 ──
-	task.stderrText += chunk;
-	if (task.batchId == null) return;
-
-	// WAL batch：整个事务回滚，batch 内所有任务全部受影响
+	// ── WAL batch：整个事务回滚，所有任务受影响 ──
 	if (task.walBatch) {
+		task.stderrText += chunk;
 		for (const t of pendingFinalizeTasks) {
 			if (t !== task) t.stderrText += chunk;
 		}
@@ -304,19 +350,48 @@ export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logge
 		return;
 	}
 
-	// 非 WAL batch：
+	// ── 非 WAL batch ──
 	if (task === inflightFirst) {
-		// ── Primary 是 inflight 任务 ──
-		// stderr 最可能来自当前正在执行的 inflight 任务。pendingFinalize 中的
-		// 任务已收到 sentinel 并完成执行，即将被 finalize/settle。不传播 stderr
-		// 给它们，以避免误杀已成功的查询。
+		if (inflight.count > 1) {
+			// 多个活跃 inflight 任务：无法确定 stderr 来源。
+			// 缓冲，由 finalizePendingTasks 中的零行归因正确匹配。
+			pendingStderr?.push(chunk);
+		} else if (pendingFinalizeTasks.size > 0) {
+			// 唯一 inflight 任务 + 存在 pending 任务。
+			// 检查 pending 中是否有零行 query（可能来自已完成任务的 stderr）。
+			let hasZeroRowQuery = false;
+			for (const t of pendingFinalizeTasks) {
+				if (t.kind === "query" && t.rows.length === 0) {
+					hasZeroRowQuery = true;
+					break;
+				}
+			}
+			if (hasZeroRowQuery) {
+				// 有零行 query：缓冲，由 finalizePendingTasks 正确归因
+				pendingStderr?.push(chunk);
+			} else if (task.kind === "query" && task.rows.length > 0) {
+				// inflight 任务已有数据行：它是合法查询，stderr 不来自它。
+				logger?.error?.(chunk.trim());
+			} else {
+				// 唯一 inflight 任务，pending 中无零行 query：
+				// stderr 只能来自该 inflight 任务。
+				task.stderrText += chunk;
+			}
+		} else if (task.kind === "query" && task.rows.length > 0) {
+			// 唯一的 inflight 任务已有数据行：它是合法查询，stderr 不来自它。
+			logger?.error?.(chunk.trim());
+		} else {
+			// 唯一的 inflight 任务，无其他待结算任务：可以安全归因
+			task.stderrText += chunk;
+		}
 		return;
 	}
 
 	// ── Primary 是 pendingFinalize 任务（无 inflight）──
-	// 无法确定 stderr 来源，保守传播到所有 pendingFinalize 任务。
+	// 没有零行 query 来匹配 stderr。此时 stderr 可能来自某个 execute 任务。
+	// 保守地归因给所有 pendingFinalize 任务（恢复旧行为兜底）。
 	for (const t of pendingFinalizeTasks) {
-		if (t !== task) t.stderrText += chunk;
+		t.stderrText += chunk;
 	}
 }
 

@@ -33,6 +33,9 @@ export class PipelineEngine {
 	/** 由 createPumpQueue 创建的泵送函数（不含 active 守卫） */
 	#pump;
 
+	/** 多任务非 WAL batch 中无法立即归因的 stderr 缓冲 */
+	#pendingStderr = [];
+
 	/**
 	 * @param {import("./process.js").ProcessManager} processManager
 	 * @param {{
@@ -87,6 +90,8 @@ export class PipelineEngine {
 			pendingFinalizeTasks: this.#pendingFinalizeTasks,
 			settleTask: (t, e, v) => this.#settleTask(t, e, v),
 			pumpQueue: () => this.#pumpQueue(),
+			pendingStderr: this.#pendingStderr,
+			inflight: this.#inflight,
 		});
 		this.#sharedValueParser = createJsonValueParser((raw) => {
 			handleParsedValue(raw, this.#inflight, {
@@ -198,6 +203,7 @@ export class PipelineEngine {
 			inflight: this.#inflight,
 			pendingFinalizeTasks: this.#pendingFinalizeTasks,
 			logger: this.#logger,
+			pendingStderr: this.#pendingStderr,
 		});
 	}
 
@@ -227,6 +233,7 @@ export class PipelineEngine {
 	kill() {
 		this.#active = false;
 		this.#sweeper.clear();
+		this.#scheduleFinalizeCheck.cancel?.();
 		this.rejectAll(new Error("PipelineEngine is killed"));
 	}
 }

@@ -507,31 +507,40 @@ describe("SQLiteExecutor", () => {
 			await sqlite.execute("CREATE TABLE IF NOT EXISTS random_concurrent (id INTEGER PRIMARY KEY, val TEXT)");
 			await sqlite.execute("INSERT INTO random_concurrent (id, val) VALUES (1, 'init')");
 
-			const ops = [];
+			const validOps = [];
+			const invalidWrappers = [];
 			const opCount = 100;
 
 			for (let i = 0; i < opCount; i++) {
 				const roll = Math.random();
 				if (roll < 0.3) {
-					ops.push(sqlite.query("SELECT id, val FROM random_concurrent WHERE id = 1"));
+					validOps.push(sqlite.query("SELECT id, val FROM random_concurrent WHERE id = 1"));
 				} else if (roll < 0.5) {
-					ops.push(sqlite.execute("INSERT INTO random_concurrent (id, val) VALUES (?, ?)", [i + 100, `v${i}`]));
+					validOps.push(sqlite.execute("INSERT INTO random_concurrent (id, val) VALUES (?, ?)", [i + 100, `v${i}`]));
 				} else if (roll < 0.7) {
-					ops.push(sqlite.query("SELECT COUNT(*) AS cnt FROM random_concurrent"));
+					validOps.push(sqlite.query("SELECT COUNT(*) AS cnt FROM random_concurrent"));
 				} else if (roll < 0.85) {
-					ops.push(assert.rejects(sqlite.query("SELECT * FROM nonexistent_random_table")));
+					invalidWrappers.push(assert.rejects(sqlite.query("SELECT * FROM nonexistent_random_table")));
 				} else {
-					ops.push(assert.rejects(sqlite.query("SELECT FORM random_concurrent")));
+					invalidWrappers.push(assert.rejects(sqlite.query("SELECT FORM random_concurrent")));
 				}
 			}
 
-			const results = await Promise.allSettled(ops);
+			const allResults = await Promise.allSettled([...validOps, ...invalidWrappers]);
+			const validResults = allResults.slice(0, validOps.length);
+			const invalidResults = allResults.slice(validOps.length);
 
-			const rejected = results.filter((r) => r.status === "rejected");
-			const fulfilled = results.filter((r) => r.status === "fulfilled");
+			// 合法 SQL 必须全部成功（无错误传播）
+			for (const r of validResults) {
+				assert.equal(r.status, "fulfilled", "合法 SQL 不应被拒绝");
+			}
+			assert.ok(validResults.length >= 1, "至少有一条合法 SQL");
 
-			assert.ok(fulfilled.length >= 1, "至少一条合法 SQL 成功");
-			assert.ok(rejected.length >= 1, "至少一条非法 SQL 被拒绝");
+			// 非法 SQL 必须全部被 assert.rejects 捕获（即 inner promise 被拒绝）
+			for (const r of invalidResults) {
+				assert.equal(r.status, "fulfilled", "非法 SQL 应被 assert.rejects 捕获");
+			}
+			assert.ok(invalidResults.length >= 1, "至少有一条非法 SQL");
 
 			// 验证数据完整性
 			const final = await sqlite.query("SELECT id, val FROM random_concurrent WHERE id = 1");

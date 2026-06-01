@@ -33,6 +33,9 @@ export class TaskWorker {
 	/** 由 createPumpQueue 创建的泵送函数 */
 	#pump;
 
+	/** 多任务非 WAL batch 中无法立即归因的 stderr 缓冲 */
+	#pendingStderr = [];
+
 	/**
 	 * @param {{
 	 *   binary: string
@@ -79,6 +82,8 @@ export class TaskWorker {
 			pendingFinalizeTasks: this.#pendingFinalizeTasks,
 			settleTask: (t, e, v) => this.#settleTask(t, e, v),
 			pumpQueue: () => this.#pumpQueue(),
+			pendingStderr: this.#pendingStderr,
+			inflight: this.#inflight,
 		});
 		this.#valueParser = createJsonValueParser((raw) => {
 			handleParsedValue(raw, this.#inflight, {
@@ -139,6 +144,7 @@ export class TaskWorker {
 	/** 终止进程并清理。 */
 	kill() {
 		this.#sweeper.clear();
+		this.#scheduleFinalizeCheck.cancel?.();
 		this.#rejectAll(new Error(`${this.#name} is killed`));
 		this.#processManager.kill();
 	}
@@ -192,6 +198,7 @@ export class TaskWorker {
 			inflight: this.#inflight,
 			pendingFinalizeTasks: this.#pendingFinalizeTasks,
 			logger: this.#logger,
+			pendingStderr: this.#pendingStderr,
 		});
 	}
 
