@@ -125,8 +125,12 @@ describe("which", () => {
 			try {
 				// 找一个肯定存在的命令
 				const found = which("node");
-				assert.ok(found);
-				assert.ok(found.toLowerCase().endsWith("node.exe") || found.endsWith("node"));
+				assert.ok(found, "应在 PATH 中找到 node");
+				const basename = path.basename(found).toLowerCase();
+				assert.ok(
+					basename === "node.exe" || basename === "node.cmd" || basename === "node",
+					`期望 node 可执行文件，实际得到: ${found}`,
+				);
 			} finally {
 				process.env.PATH = originalPath;
 			}
