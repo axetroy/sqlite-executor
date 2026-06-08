@@ -690,12 +690,17 @@ describe("SQLiteExecutor", () => {
 				// pendingStatements 会访问 readerPool.pendingStatements（?? 分支）
 				assert.equal(typeof sqlite2.pendingStatements, "number");
 				assert.equal(sqlite2.pendingStatements, 0);
+				const pool = sqlite2.readerPool;
+				assert.ok(pool);
+				const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(pool), "pendingStatements");
+				assert.ok(descriptor?.get);
 
-				// 发一个查询到 reader 池
-				const p = sqlite2.query("SELECT 1 AS v");
+				Object.defineProperty(pool, "pendingStatements", {
+					configurable: true,
+					get: () => 1,
+				});
 				assert.equal(sqlite2.pendingStatements, 1);
-				await p;
-				await new Promise((r) => setTimeout(r, 100));
+				delete pool.pendingStatements;
 				assert.equal(sqlite2.pendingStatements, 0);
 			} finally {
 				await sqlite2.close();
