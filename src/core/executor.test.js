@@ -22,6 +22,13 @@ const SQLite3BinaryFile = path.join(root, "bin", "sqlite3" + (process.platform =
  */
 let sqlite;
 
+function settleOp(run) {
+	return run().then(
+		(value) => ({ status: "fulfilled", value }),
+		(reason) => ({ status: "rejected", reason }),
+	);
+}
+
 beforeEach(async () => {
 	await downloadSQLite3();
 	sqlite = new SQLiteExecutor({ binary: SQLite3BinaryFile });
@@ -507,28 +514,30 @@ describe("SQLiteExecutor", () => {
 			await sqlite.execute("CREATE TABLE IF NOT EXISTS random_concurrent (id INTEGER PRIMARY KEY, val TEXT)");
 			await sqlite.execute("INSERT INTO random_concurrent (id, val) VALUES (1, 'init')");
 
-			const validOps = [];
-			const invalidOps = [];
+			const ops = [];
 			const opCount = 100;
 
 			for (let i = 0; i < opCount; i++) {
 				const roll = Math.random();
 				if (roll < 0.3) {
-					validOps.push(sqlite.query("SELECT id, val FROM random_concurrent WHERE id = 1"));
+					ops.push({ kind: "valid", run: () => sqlite.query("SELECT id, val FROM random_concurrent WHERE id = 1") });
 				} else if (roll < 0.5) {
-					validOps.push(sqlite.execute("INSERT INTO random_concurrent (id, val) VALUES (?, ?)", [i + 100, `v${i}`]));
+					ops.push({
+						kind: "valid",
+						run: () => sqlite.execute("INSERT INTO random_concurrent (id, val) VALUES (?, ?)", [i + 100, `v${i}`]),
+					});
 				} else if (roll < 0.7) {
-					validOps.push(sqlite.query("SELECT COUNT(*) AS cnt FROM random_concurrent"));
+					ops.push({ kind: "valid", run: () => sqlite.query("SELECT COUNT(*) AS cnt FROM random_concurrent") });
 				} else if (roll < 0.85) {
-					invalidOps.push(sqlite.query("SELECT * FROM nonexistent_random_table"));
+					ops.push({ kind: "invalid", run: () => sqlite.query("SELECT * FROM nonexistent_random_table") });
 				} else {
-					invalidOps.push(sqlite.query("SELECT FORM random_concurrent"));
+					ops.push({ kind: "invalid", run: () => sqlite.query("SELECT FORM random_concurrent") });
 				}
 			}
 
-			const allResults = await Promise.allSettled([...validOps, ...invalidOps]);
-			const validResults = allResults.slice(0, validOps.length);
-			const invalidResults = allResults.slice(validOps.length);
+			const allResults = await Promise.all(ops.map((op) => settleOp(op.run)));
+			const validResults = allResults.filter((_, index) => ops[index].kind === "valid");
+			const invalidResults = allResults.filter((_, index) => ops[index].kind === "invalid");
 
 			// 随机混合并发在不同平台/时序下可能出现个别合法任务被错误归因；
 			// 这里仅将其作为 smoke test，重点验证不会全量失败，且最终数据保持完整。
@@ -551,27 +560,28 @@ describe("SQLiteExecutor", () => {
 			await sqlite.execute("INSERT INTO reg_concurrent (id, val) VALUES (1, 'init')");
 
 			// 确定性混合：10 条合法 + 10 条非法 = 20 条操作
-			const validOps = [];
-			const invalidOps = [];
+			const ops = [];
 
 			// 合法操作：SELECT 和 INSERT 交替
 			for (let i = 0; i < 10; i++) {
 				if (i % 2 === 0) {
-					validOps.push(sqlite.query("SELECT id, val FROM reg_concurrent WHERE id = 1"));
+					ops.push({ kind: "valid", run: () => sqlite.query("SELECT id, val FROM reg_concurrent WHERE id = 1") });
 				} else {
-					validOps.push(sqlite.execute("INSERT INTO reg_concurrent (id, val) VALUES (?, ?)", [i + 100, `reg-${i}`]));
+					ops.push({
+						kind: "valid",
+						run: () => sqlite.execute("INSERT INTO reg_concurrent (id, val) VALUES (?, ?)", [i + 100, `reg-${i}`]),
+					});
 				}
 			}
 
 			// 非法操作：语法错误（比 runtime error 更可能在 sentinel 之前输出 stderr）
 			for (let i = 0; i < 10; i++) {
-				invalidOps.push(sqlite.query("SELECT FORM reg_concurrent"));
+				ops.push({ kind: "invalid", run: () => sqlite.query("SELECT FORM reg_concurrent") });
 			}
 
-			const allResults = await Promise.allSettled([...validOps, ...invalidOps]);
-
-			const validResults = allResults.slice(0, 10);
-			const invalidResults = allResults.slice(10, 20);
+			const allResults = await Promise.all(ops.map((op) => settleOp(op.run)));
+			const validResults = allResults.filter((_, index) => ops[index].kind === "valid");
+			const invalidResults = allResults.filter((_, index) => ops[index].kind === "invalid");
 
 			const fulfilled = validResults.filter((r) => r.status === "fulfilled");
 			const rejected = invalidResults.filter((r) => r.status === "rejected");
