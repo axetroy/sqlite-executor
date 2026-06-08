@@ -380,8 +380,16 @@ export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logge
 		} else if (task.kind === "query" && task.rows.length > 0) {
 			// 唯一的 inflight 任务已有数据行：它是合法查询，stderr 不来自它。
 			logger?.error?.(chunk.trim());
+		} else if (task.kind === "query") {
+			// query 任务：缓冲而非直接归因。
+			// 在 macOS 等平台上，上一批次失败任务的 stderr 可能延迟到达，此时的
+			// 唯一 inflight query 不一定就是失败源。将其缓冲到 pendingStderr，
+			// 由 finalizePendingTasks 的零行归因机制按行数决定是否实际归因：
+			//   - sentinel 到达后 rows.length === 0 → 确为失败查询，正确归因
+			//   - sentinel 到达后 rows.length > 0  → 合法查询，清除 pendingStderr 不归因
+			pendingStderr?.push(chunk);
 		} else {
-			// 唯一的 inflight 任务，无其他待结算任务：可以安全归因
+			// execute 任务：无 rows 字段，零行机制无法处理，直接归因。
 			task.stderrText += chunk;
 		}
 		return;

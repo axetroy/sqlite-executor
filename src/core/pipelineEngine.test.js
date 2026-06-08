@@ -1328,15 +1328,24 @@ describe("PipelineEngine", () => {
 	// ── stderr 处理 ──────────────────────────────────
 
 	describe("stderr 处理", () => {
-		test("stderr 文本追加到 inflight 任务的 stderrText", () => {
-			const { task } = createTask({ token: "stderr-test" });
+		test("单 inflight query 任务的 stderr 先缓冲，sentinel 到达后归因", async () => {
+			const { task, promise } = createTask({ token: "stderr-test" });
 			engine.enqueue(task);
 
+			// 单 inflight query 任务：stderr 先缓冲到 pendingStderr，不直接写入 stderrText
 			engine.handleStderrChunk("Error: near line 1");
-			assert.equal(task.stderrText, "Error: near line 1");
+			assert.equal(task.stderrText, "", "stderr 应缓冲，尚未直接归因");
 
 			engine.handleStderrChunk(": syntax error");
+			assert.equal(task.stderrText, "", "stderr 仍处于缓冲中");
+
+			// 发送 sentinel，触发 finalizePendingTasks，缓冲的 stderr 被归因到零行 query
+			engine.handleStdoutChunk(`[{"${TOKEN_COLUMN}":"stderr-test"}]`);
+			await flush();
+
+			// finalize 后，零行 query 任务已通过 pendingStderr 归因到 stderrText
 			assert.equal(task.stderrText, "Error: near line 1: syntax error");
+			await assert.rejects(promise, /Error: near line 1/);
 			disarm(task);
 		});
 

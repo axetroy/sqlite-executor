@@ -717,4 +717,33 @@ describe("handleStderrChunk", () => {
 		// pendingFinalize 任务不应被传播，它已收到 sentinel 并完成执行
 		assert.equal(pendingTask.stderrText, "", "pendingFinalize 任务不应获得 stderr（不传播）");
 	});
+
+	test("唯一 inflight query 任务且无 pending 时缓冲 stderr（防止跨批次误归因）", () => {
+		const pendingStderr = [];
+		const ctx = { ...makeContext(), pendingStderr };
+		// 单个 query inflight 任务，rows 尚为空（未收到数据行）
+		const queryTask = { kind: "query", rows: [], stderrText: "", batchId: "b1", walBatch: false };
+		ctx.inflight.push(queryTask);
+
+		handleStderrChunk("stale error", ctx);
+
+		// stderr 应缓冲到 pendingStderr，而非直接归因给 queryTask
+		// 这防止前一批次残余 stderr 误归因给后续合法查询
+		assert.equal(queryTask.stderrText, "", "query 任务不应立即获得 stderr");
+		assert.deepEqual(pendingStderr, ["stale error"], "stderr 应缓冲到 pendingStderr");
+	});
+
+	test("唯一 inflight execute 任务且无 pending 时直接归因 stderr", () => {
+		const pendingStderr = [];
+		const ctx = { ...makeContext(), pendingStderr };
+		// execute 任务无 rows 字段，零行机制无法处理，直接归因
+		const execTask = { kind: "execute", stderrText: "", batchId: "b1", walBatch: false };
+		ctx.inflight.push(execTask);
+
+		handleStderrChunk("exec error", ctx);
+
+		// execute 任务应直接获得 stderr（零行归因机制不适用于 execute）
+		assert.ok(execTask.stderrText.includes("exec error"), "execute 任务直接获得 stderr");
+		assert.deepEqual(pendingStderr, [], "pendingStderr 不应有内容");
+	});
 });
