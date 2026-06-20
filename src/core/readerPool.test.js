@@ -202,7 +202,8 @@ describe("ReaderPool", () => {
 					reject,
 				});
 			});
-			worker._process.kill("SIGKILL");
+			// Windows 不支持信号名 "SIGKILL"，用信号号 9（在所有平台上皆可用）
+			worker._process.kill(9);
 			await assert.rejects(p, /exited unexpectedly/);
 		});
 	});

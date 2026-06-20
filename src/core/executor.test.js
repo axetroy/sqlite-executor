@@ -978,7 +978,7 @@ describe("SQLiteExecutor", () => {
 				const proc = exec._process;
 				assert.ok(proc, "进程应正在运行");
 
-				proc.kill("SIGKILL");
+				proc.kill(9); // 使用信号号 9（SIGKILL），兼容 Windows
 
 				await new Promise((r) => setTimeout(r, 500));
 				const rows = await exec.query("SELECT 1 AS v");
@@ -995,7 +995,7 @@ describe("SQLiteExecutor", () => {
 				const proc = exec._process;
 				assert.ok(proc, "进程应正在运行");
 
-				proc.kill("SIGKILL");
+				proc.kill(9); // 使用信号号 9（SIGKILL），兼容 Windows
 
 				await assert.rejects(p, /exited unexpectedly/);
 

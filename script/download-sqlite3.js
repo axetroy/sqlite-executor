@@ -49,14 +49,21 @@ async function downloadFileWithProgress(url, outputPath) {
 }
 
 function getSQLte3URL() {
+	const arch = process.arch;
 	switch (process.platform) {
 		case "win32": {
 			return "https://www.sqlite.org/2025/sqlite-tools-win-x64-3490100.zip";
 		}
 		case "darwin": {
+			if (arch === "arm64") {
+				return "https://www.sqlite.org/2025/sqlite-tools-osx-arm64-3490100.zip";
+			}
 			return "https://www.sqlite.org/2025/sqlite-tools-osx-x64-3490100.zip";
 		}
 		case "linux": {
+			if (arch === "arm64") {
+				return "https://www.sqlite.org/2025/sqlite-tools-linux-arm64-3490100.zip";
+			}
 			return "https://www.sqlite.org/2025/sqlite-tools-linux-x64-3490100.zip";
 		}
 		default: {

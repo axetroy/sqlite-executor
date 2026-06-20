@@ -314,7 +314,7 @@ describe("TaskWorker", () => {
 					reject,
 				});
 			});
-			worker._process.kill("SIGKILL");
+			worker._process.kill(9); // 使用信号号 9（SIGKILL），兼容 Windows
 			await assert.rejects(p, /exited unexpectedly/);
 		});
 

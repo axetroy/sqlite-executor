@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
+import path from "node:path";
 import { which } from "../which.js";
 
 /** @type {number} */
@@ -74,7 +75,7 @@ export class ProcessManager {
 		if (!this.#binary) {
 			throw new Error("sqlite3 binary path is empty. Provide a valid --binary / binary option.");
 		}
-		if (!fs.existsSync(this.#binary)) {
+		if (path.isAbsolute(this.#binary) && !fs.existsSync(this.#binary)) {
 			throw new Error(`sqlite3 binary not found: ${this.#binary}. Make sure sqlite3 is installed or provide a valid --binary / binary option.`);
 		}
 

@@ -16,7 +16,31 @@ import {
 	STATE_BLOCK_COMMENT,
 } from "./constants.js";
 
-const _normDecoder = new TextDecoder("utf-16le");
+/**
+ * 将 Uint16Array（UCS-2 编码）解码为 JavaScript 字符串。
+ * 使用 String.fromCharCode.apply 替代 TextDecoder，避免跨 CPU 字节序问题：
+ * - TextDecoder("utf-16le") 在小端 CPU 上正确，但在大端 CPU 上产生乱码
+ * - Uint16Array 的底层内存布局依赖 CPU 字节序
+ * - String.fromCharCode() 直接从 16 位码元创建字符，与字节序无关
+ * @param {Uint16Array} codes
+ * @returns {string}
+ */
+function _decodeU16(codes) {
+	const len = codes.length;
+	if (len === 0) return "";
+	// 1024 是个安全的批处理大小，避免 V8 的 apply 参数栈溢出
+	const batchSize = 1024;
+	if (len <= batchSize) {
+		return String.fromCharCode.apply(null, codes);
+	}
+	const parts = new Array(Math.ceil(len / batchSize));
+	for (let i = 0; i < parts.length; i++) {
+		const start = i * batchSize;
+		const end = Math.min(start + batchSize, len);
+		parts[i] = String.fromCharCode.apply(null, codes.subarray(start, end));
+	}
+	return parts.join("");
+}
 
 const _normCache = new LRUCache({ maxSize: 256, maxKeyLength: 4096 });
 
@@ -112,7 +136,7 @@ function _normalize(sql) {
 	} else {
 		while (writePos > 0 && outCodes[writePos - 1] === CC_SEMICOLON) writePos--;
 		outCodes[writePos++] = CC_SEMICOLON;
-		normalized = _normDecoder.decode(outCodes.subarray(0, writePos));
+		normalized = _decodeU16(outCodes.subarray(0, writePos));
 	}
 
 	const paramCount = questionPositions.length;
