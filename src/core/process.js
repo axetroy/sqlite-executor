@@ -96,6 +96,17 @@ export class ProcessManager {
 		proc.stdout?.setEncoding("utf-8");
 		proc.stderr?.setEncoding("utf-8");
 
+		// 处理 stdin pipe 在进程退出后被关闭时的 EPIPE 错误。
+		// 场景：进程被外部 kill（SIGTERM/KILL）、OS 级进程终止，
+		// close 事件尚未到达事件循环时，pump() 可能尝试写入已关闭的 stdin。
+		// 错误被吃掉，不传播为 uncaughtException。
+		// PipelineEngine 的 pump 会在 close 事件抵达后通过
+		// #handleProcessFailure → #pipeline.rejectAll() 正确拒绝所有待处理任务。
+		proc.stdin?.on("error", () => {
+			// EPIPE 是预期的（进程已退出，stdin pipe 被关闭），静默忽略。
+			// 任何 stdin 写入错误都不应传播为 uncaughtException。
+		});
+
 		this.#proc = proc;
 		return proc;
 	}
