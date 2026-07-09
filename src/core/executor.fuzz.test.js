@@ -483,10 +483,9 @@ describe("fuzz: 文件数据库", () => {
 				await op();
 			}
 
-			// 验证表仍然可用
+			// 验证表仍然可查询（30 轮随机操作可能误删所有行，因此不强制至少 1 行）
 			const rows = await schemaSqlite.query("SELECT * FROM fuzz_schema ORDER BY id ASC LIMIT 20");
 			assert.ok(Array.isArray(rows), "schema 变更后表应可查询");
-			assert.ok(rows.length >= 1, "至少应有 1 行数据");
 		} finally {
 			await schemaSqlite.close();
 			cleanupDbFile(dbFile);
