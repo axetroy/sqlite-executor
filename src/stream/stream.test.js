@@ -281,3 +281,172 @@ describe("AsyncRowBuffer", () => {
 		assert.deepEqual(results, [1]);
 	});
 });
+
+describe("fuzz: AsyncRowBuffer", () => {
+	test("随机 push/next/end 模式不崩溃", async () => {
+		const buffer = new AsyncRowBuffer();
+		const results = [];
+		const producer = (async () => {
+			for (let i = 0; i < 500; i++) {
+				buffer.push({ id: i });
+				if (Math.random() < 0.1) await new Promise((r) => setImmediate(r));
+			}
+			buffer.end();
+		})();
+		const consumer = (async () => {
+			for await (const row of buffer) {
+				results.push(row);
+				if (results.length >= 500) break;
+			}
+		})();
+		await Promise.all([producer, consumer]);
+		assert.equal(results.length, 500);
+	});
+
+	test("大量 push 后消费", async () => {
+		const buffer = new AsyncRowBuffer();
+		const N = 10000;
+		for (let i = 0; i < N; i++) {
+			buffer.push(i);
+		}
+		buffer.end();
+		const results = [];
+		for await (const v of buffer) {
+			results.push(v);
+		}
+		assert.equal(results.length, N);
+		for (let i = 0; i < N; i++) {
+			assert.equal(results[i], i);
+		}
+	});
+
+	test("push 和 next 交替", async () => {
+		const buffer = new AsyncRowBuffer();
+		for (let i = 0; i < 1000; i++) {
+			buffer.push(i);
+			const { value, done } = await buffer.next();
+			assert.equal(done, false);
+			assert.equal(value, i);
+		}
+		buffer.end();
+		const { done } = await buffer.next();
+		assert.equal(done, true);
+	});
+
+	test("先 next 再 push（异步生产）", async () => {
+		const buffer = new AsyncRowBuffer();
+		const nextPromise = buffer.next();
+		buffer.push(42);
+		const result = await nextPromise;
+		assert.deepEqual(result, { value: 42, done: false });
+	});
+
+	test("error 后消费已缓存数据", async () => {
+		const buffer = new AsyncRowBuffer();
+		buffer.push(1);
+		buffer.push(2);
+		buffer.push(3);
+		buffer.error(new Error("fail"));
+
+		const results = [];
+		await assert.rejects(
+			(async () => {
+				for await (const v of buffer) {
+					results.push(v);
+				}
+			})(),
+			/fail/,
+		);
+		assert.deepEqual(results, [1, 2, 3]);
+	});
+
+	test("return 后不再消费", async () => {
+		const buffer = new AsyncRowBuffer();
+		buffer.push(1);
+		buffer.push(2);
+		buffer.push(3);
+		buffer.return();
+
+		const results = [];
+		for await (const v of buffer) {
+			results.push(v);
+		}
+		assert.deepEqual(results, []);
+	});
+
+	test("多次 return 安全", async () => {
+		const buffer = new AsyncRowBuffer();
+		buffer.return();
+		buffer.return();
+		buffer.return();
+		const { done } = await buffer.next();
+		assert.equal(done, true);
+	});
+
+	test("end 后 push 被忽略", async () => {
+		const buffer = new AsyncRowBuffer();
+		buffer.push(1);
+		buffer.end();
+		buffer.push(2);
+		buffer.push(3);
+		const results = [];
+		for await (const v of buffer) {
+			results.push(v);
+		}
+		assert.deepEqual(results, [1]);
+	});
+
+	test("error 后 push 被忽略", async () => {
+		const buffer = new AsyncRowBuffer();
+		buffer.push(1);
+		buffer.error(new Error("fail"));
+		buffer.push(2);
+		const results = [];
+		await assert.rejects(
+			(async () => {
+				for await (const v of buffer) {
+					results.push(v);
+				}
+			})(),
+			/fail/,
+		);
+		assert.deepEqual(results, [1]);
+	});
+
+	test("空 buffer 立即 end", async () => {
+		const buffer = new AsyncRowBuffer();
+		buffer.end();
+		const results = [];
+		for await (const v of buffer) {
+			results.push(v);
+		}
+		assert.deepEqual(results, []);
+	});
+
+	test("for await 提前 break", async () => {
+		const buffer = new AsyncRowBuffer();
+		for (let i = 0; i < 100; i++) buffer.push(i);
+		buffer.end();
+		const results = [];
+		for await (const v of buffer) {
+			results.push(v);
+			if (v >= 10) break;
+		}
+		assert.equal(results.length, 11);
+	});
+
+	test("pending next 被 end 解决", async () => {
+		const buffer = new AsyncRowBuffer();
+		const p = buffer.next();
+		buffer.end();
+		const { done } = await p;
+		assert.equal(done, true);
+	});
+
+	test("pending next 被 error 拒绝", async () => {
+		const buffer = new AsyncRowBuffer();
+		const p = buffer.next();
+		buffer.error(new Error("mass fail"));
+		await assert.rejects(p, /mass fail/);
+	});
+});

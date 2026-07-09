@@ -252,3 +252,140 @@ describe("InflightTracker", () => {
 		}
 	});
 });
+
+describe("fuzz: InflightTracker", () => {
+	test("随机 push/shift 模式不丢失数据", () => {
+		const t = new InflightTracker();
+		const expected = [];
+		for (let i = 0; i < 5000; i++) {
+			if (Math.random() < 0.6) {
+				const val = `v${i}`;
+				t.push(val);
+				expected.push(val);
+			} else if (expected.length > 0) {
+				const shifted = t.shift();
+				const exp = expected.shift();
+				assert.equal(shifted, exp, `shift 应返回 ${exp}`);
+			}
+		}
+		// 清空剩余
+		while (expected.length > 0) {
+			const shifted = t.shift();
+			const exp = expected.shift();
+			assert.equal(shifted, exp);
+		}
+		assert.equal(t.count, 0);
+	});
+
+	test("大量 push 后全部 shift", () => {
+		const t = new InflightTracker();
+		const N = 10000;
+		for (let i = 0; i < N; i++) {
+			t.push(i);
+		}
+		assert.equal(t.count, N);
+		for (let i = 0; i < N; i++) {
+			assert.equal(t.shift(), i);
+		}
+		assert.equal(t.count, 0);
+	});
+
+	test("push 后立即 shift 交替", () => {
+		const t = new InflightTracker();
+		for (let i = 0; i < 5000; i++) {
+			t.push(i);
+			assert.equal(t.shift(), i);
+			assert.equal(t.count, 0);
+		}
+	});
+
+	test("批量 push 后分批 shift", () => {
+		const t = new InflightTracker();
+		const batchSize = 100;
+		for (let round = 0; round < 20; round++) {
+			for (let i = 0; i < batchSize; i++) {
+				t.push(`r${round}-${i}`);
+			}
+			assert.equal(t.count, batchSize);
+			for (let i = 0; i < batchSize; i++) {
+				assert.equal(t.shift(), `r${round}-${i}`);
+			}
+			assert.equal(t.count, 0);
+		}
+	});
+
+	test("forEach 遍历大量元素", () => {
+		const t = new InflightTracker();
+		const N = 5000;
+		for (let i = 0; i < N; i++) {
+			t.push(i);
+		}
+		let count = 0;
+		t.forEach((v) => {
+			assert.equal(v, count);
+			count++;
+		});
+		assert.equal(count, N);
+	});
+
+	test("toArray 返回正确顺序", () => {
+		const t = new InflightTracker();
+		const N = 1000;
+		for (let i = 0; i < N; i++) {
+			t.push(i);
+		}
+		const arr = t.toArray();
+		assert.equal(arr.length, N);
+		for (let i = 0; i < N; i++) {
+			assert.equal(arr[i], i);
+		}
+	});
+
+	test("shift 部分后 forEach 只遍历剩余", () => {
+		const t = new InflightTracker();
+		for (let i = 0; i < 100; i++) t.push(i);
+		for (let i = 0; i < 30; i++) t.shift();
+		const remaining = [];
+		t.forEach((v) => remaining.push(v));
+		assert.equal(remaining.length, 70);
+		assert.equal(remaining[0], 30);
+		assert.equal(remaining[69], 99);
+	});
+
+	test("clear 后 count 归零", () => {
+		const t = new InflightTracker();
+		for (let i = 0; i < 1000; i++) t.push(i);
+		t.clear();
+		assert.equal(t.count, 0);
+		assert.equal(t.first, null);
+		assert.deepEqual(t.toArray(), []);
+	});
+
+	test("多次 clear 安全", () => {
+		const t = new InflightTracker();
+		t.clear();
+		t.clear();
+		t.clear();
+		assert.equal(t.count, 0);
+	});
+
+	test("shift 空队列返回 null", () => {
+		const t = new InflightTracker();
+		assert.equal(t.shift(), null);
+		t.push("a");
+		t.shift();
+		assert.equal(t.shift(), null);
+	});
+
+	test("first 在部分 shift 后正确", () => {
+		const t = new InflightTracker();
+		t.push("a", "b", "c");
+		assert.equal(t.first, "a");
+		t.shift();
+		assert.equal(t.first, "b");
+		t.shift();
+		assert.equal(t.first, "c");
+		t.shift();
+		assert.equal(t.first, null);
+	});
+});

@@ -110,3 +110,124 @@ describe("classifySQL", () => {
 		assert.equal(classifySQL(";;;"), "write");
 	});
 });
+
+describe("fuzz: classifySQL", () => {
+	test("随机 SQL 关键词不崩溃", () => {
+		const keywords = [
+			"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+			"WITH", "VALUES", "EXPLAIN", "PRAGMA", "ATTACH", "DETACH",
+			"REINDEX", "ANALYZE", "VACUUM", "BEGIN", "COMMIT", "ROLLBACK",
+			"SAVEPOINT", "RELEASE", "GRANT", "REVOKE", "TRIGGER", "VIEW",
+			"INDEX", "TABLE", "TEMP", "TEMPORARY", "IF", "NOT", "EXISTS",
+			"UNION", "INTERSECT", "EXCEPT", "ALL", "DISTINCT", "FROM",
+			"WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET",
+			"JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "CROSS", "NATURAL",
+			"ON", "USING", "SET", "INTO", "DEFAULT", "NULL", "PRIMARY",
+			"KEY", "FOREIGN", "REFERENCES", "CHECK", "CONSTRAINT", "UNIQUE",
+			"AUTOINCREMENT", "ROWID", "INTEGER", "TEXT", "REAL", "BLOB",
+			"NUMERIC", "BOOLEAN", "DATE", "DATETIME",
+		];
+		for (let i = 0; i < 1000; i++) {
+			const count = Math.floor(Math.random() * 10) + 1;
+			const parts = [];
+			for (let j = 0; j < count; j++) {
+				const kw = keywords[Math.floor(Math.random() * keywords.length)];
+				parts.push(kw);
+			}
+			const sql = parts.join(" ");
+			const result = classifySQL(sql);
+			assert.ok(result === "read" || result === "write", `应返回 read 或 write，输入: ${sql}`);
+		}
+	});
+
+	test("随机大小写不崩溃", () => {
+		const sqls = [
+			"select * from users",
+			"Select * From users",
+			"SELECT * FROM users",
+			"SeLeCt * FrOm UsErS",
+			"insert into t values (1)",
+			"INSERT INTO t VALUES (1)",
+			"InSeRt InTo T vAlUeS (1)",
+		];
+		for (const sql of sqls) {
+			const result = classifySQL(sql);
+			assert.ok(result === "read" || result === "write");
+		}
+	});
+
+	test("随机多语句混合", () => {
+		const stmts = [
+			"SELECT 1",
+			"INSERT INTO t VALUES (1)",
+			"UPDATE t SET a=1",
+			"DELETE FROM t",
+			"CREATE TABLE t (id INT)",
+			"DROP TABLE t",
+			"WITH cte AS (SELECT 1) SELECT * FROM cte",
+			"VALUES (1, 2)",
+			"EXPLAIN SELECT * FROM t",
+		];
+		for (let i = 0; i < 500; i++) {
+			const count = Math.floor(Math.random() * 5) + 1;
+			const selected = [];
+			for (let j = 0; j < count; j++) {
+				selected.push(stmts[Math.floor(Math.random() * stmts.length)]);
+			}
+			const sql = selected.join("; ");
+			const result = classifySQL(sql);
+			assert.ok(result === "read" || result === "write");
+			// 如果包含任何写语句，结果应为 write
+			const hasWrite = selected.some((s) => {
+				const kw = s.split(/\s+/)[0].toUpperCase();
+				return !["SELECT", "WITH", "VALUES", "EXPLAIN"].includes(kw);
+			});
+			if (hasWrite) {
+				assert.equal(result, "write", `含写语句的多语句应返回 write: ${sql}`);
+			}
+		}
+	});
+
+	test("各种空白前缀和换行", () => {
+		const prefixes = ["", " ", "  ", "\n", "\t", "\n\t ", "  \n  "];
+		const sqls = ["SELECT 1", "INSERT INTO t VALUES (1)", "UPDATE t SET a=1"];
+		for (const prefix of prefixes) {
+			for (const sql of sqls) {
+				const result = classifySQL(prefix + sql);
+				assert.ok(result === "read" || result === "write");
+			}
+		}
+	});
+
+	test("非字符串类型不崩溃", () => {
+		const inputs = [null, undefined, 123, true, {}, [], Symbol("test")];
+		for (const input of inputs) {
+			assert.equal(classifySQL(input), "write", `非字符串应返回 write`);
+		}
+	});
+
+	test("超长 SQL 不崩溃", () => {
+		const long = "SELECT " + "a".repeat(100000);
+		const result = classifySQL(long);
+		assert.equal(result, "read");
+	});
+
+	test("大量分号分隔的空语句", () => {
+		const sql = ";".repeat(1000);
+		assert.equal(classifySQL(sql), "write");
+	});
+
+	test("仅空白和分号", () => {
+		assert.equal(classifySQL(" ; ; ; "), "write");
+	});
+
+	test("缓存命中：大量不同 SQL 不冲突", () => {
+		const sqls = new Set();
+		for (let i = 0; i < 500; i++) {
+			sqls.add(`SELECT ${i} AS v`);
+		}
+		for (const sql of sqls) {
+			assert.equal(classifySQL(sql), "read");
+		}
+	});
+});

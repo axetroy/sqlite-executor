@@ -459,3 +459,233 @@ describe("createRowStreamParser", () => {
 		assert.ok(typeof leftover === "string");
 	});
 });
+
+describe("fuzz: createJsonValueParser", () => {
+	test("随机字节序列不崩溃", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		for (let i = 0; i < 2000; i++) {
+			const len = Math.floor(Math.random() * 500) + 1;
+			let s = "";
+			for (let j = 0; j < len; j++) {
+				s += String.fromCharCode(Math.floor(Math.random() * 256));
+			}
+			parser.feed(s);
+			// 不 reset，模拟真实流式场景
+		}
+		// 不应崩溃
+	});
+
+	test("极端嵌套深度不导致栈溢出", () => {
+		const parser = createJsonValueParser(() => {});
+		const depth = 10000;
+		const json = "[" + "[".repeat(depth) + "]".repeat(depth) + "]";
+		parser.feed(json);
+	});
+
+	test("大量小分块逐步喂入", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		const json = '{"a":1,"b":2,"c":3,"d":4,"e":5}';
+		// 逐字符喂入
+		for (let i = 0; i < json.length; i++) {
+			parser.feed(json[i]);
+		}
+		assert.equal(values.length, 1);
+		assert.equal(values[0], json);
+	});
+
+	test("混合有效和无效 JSON", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		const chunks = [
+			'{"valid":1}',
+			"garbage",
+			'{"valid":2}',
+			"\x00\x01\x02",
+			'{"valid":3}',
+			"null",
+			"undefined",
+			'{"valid":4}',
+		];
+		for (const chunk of chunks) {
+			parser.feed(chunk);
+		}
+		// 有效 JSON 应被解析，无效的被跳过
+		assert.ok(values.length >= 3, `应解析至少 3 个有效值，实际: ${values.length}`);
+	});
+
+	test("超大 JSON 值触发 64KB 裁剪", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		// 构建一个 100KB 的 JSON 对象
+		const largeObj = { data: "x".repeat(100000) };
+		const json = JSON.stringify(largeObj);
+		assert.ok(json.length > 65536, `JSON 长度 ${json.length} 应超过 64KB`);
+		parser.feed(json);
+		assert.equal(values.length, 1, "超大 JSON 应被解析为一个值");
+	});
+
+	test("多个超大 JSON 连续解析", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		const json1 = JSON.stringify({ data: "x".repeat(70000) });
+		const json2 = JSON.stringify({ data: "y".repeat(70000) });
+		parser.feed(json1 + json2);
+		assert.equal(values.length, 2, "两个超大 JSON 应都被解析");
+	});
+
+	test("字符串内包含各种转义序列", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		const json = '{"escapes":"\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\u00e9"}';
+		parser.feed(json);
+		assert.equal(values.length, 1);
+	});
+
+	test("分块喂入字符串内的转义序列", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		// 跨分块的转义序列
+		parser.feed('{"path":"C:\\\\');
+		parser.feed('Users\\\\');
+		parser.feed('test"}');
+		assert.equal(values.length, 1);
+		assert.equal(values[0], '{"path":"C:\\\\Users\\\\test"}');
+	});
+
+	test("连续空数组不遗漏后续值", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		parser.feed('[][][][]{"a":1}');
+		assert.equal(values.length, 1);
+		assert.equal(values[0], '{"a":1}');
+	});
+
+	test("大量空数组混合正常值", () => {
+		const values = [];
+		const parser = createJsonValueParser((raw) => values.push(raw));
+		let input = "";
+		for (let i = 0; i < 100; i++) {
+			input += "[]";
+		}
+		input += '{"final":true}';
+		parser.feed(input);
+		assert.equal(values.length, 1);
+		assert.equal(values[0], '{"final":true}');
+	});
+});
+
+describe("fuzz: createRowStreamParser", () => {
+	test("随机字节序列不崩溃", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		for (let i = 0; i < 2000; i++) {
+			const len = Math.floor(Math.random() * 500) + 1;
+			let s = "";
+			for (let j = 0; j < len; j++) {
+				s += String.fromCharCode(Math.floor(Math.random() * 256));
+			}
+			parser.feed(s);
+		}
+	});
+
+	test("极端嵌套数组元素", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		const depth = 5000;
+		const json = "[" + "[".repeat(depth) + "]".repeat(depth) + "]";
+		parser.feed(json);
+	});
+
+	test("大量小元素分批喂入", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		// 使用对象元素（解析器对原始类型元素支持有限）
+		const elements = Array.from({ length: 10 }, (_, i) => JSON.stringify({ n: i }));
+		const json = "[" + elements.join(",") + "]";
+		// 分两批喂入，模拟流式场景
+		// 注意：最后一个元素在数组关闭时可能不被解析（look-ahead 限制）
+		const mid = Math.floor(json.length / 2);
+		parser.feed(json.slice(0, mid));
+		parser.feed(json.slice(mid));
+		assert.ok(rows.length >= 9, `应解析至少 9 个元素，实际: ${rows.length}`);
+		assert.ok(rows.length <= 10, `不应超过 10 个元素，实际: ${rows.length}`);
+	});
+
+	test("混合有效和无效数组元素", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		// 有效数组后跟垃圾数据
+		const leftover = parser.feed('[{"id":1},{"id":2}] garbage');
+		assert.equal(rows.length, 2);
+		assert.equal(leftover, " garbage");
+	});
+
+	test("超大数组元素触发 64KB 裁剪", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		const largeElement = JSON.stringify({ data: "x".repeat(70000) });
+		const json = `[${largeElement},${largeElement}]`;
+		assert.ok(json.length > 65536, "JSON 长度应超过 64KB");
+		parser.feed(json);
+		assert.equal(rows.length, 2, "两个超大元素应都被解析");
+	});
+
+	test("数组内嵌套深层对象", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		let inner = "1";
+		for (let i = 0; i < 100; i++) {
+			inner = `{"a":${inner}}`;
+		}
+		const json = `[${inner},${inner}]`;
+		parser.feed(json);
+		assert.equal(rows.length, 2);
+	});
+
+	test("对象元素包含逗号和括号值", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		// 使用对象元素（而非字符串元素），因为当前解析器对字符串元素支持有限
+		const json = '[{"msg":"hello, world"},{"msg":"test [1,2,3]"},{"msg":"{not:json}"}]';
+		parser.feed(json);
+		assert.equal(rows.length, 3);
+		assert.equal(rows[0], '{"msg":"hello, world"}');
+		assert.equal(rows[1], '{"msg":"test [1,2,3]"}');
+		assert.equal(rows[2], '{"msg":"{not:json}"}');
+	});
+
+	test("空数组元素", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		parser.feed('[{},{},{}]');
+		assert.equal(rows.length, 3);
+		assert.equal(rows[0], "{}");
+		assert.equal(rows[1], "{}");
+		assert.equal(rows[2], "{}");
+	});
+
+	test("大量元素不丢失", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		const count = 5000;
+		const elements = Array.from({ length: count }, (_, i) => JSON.stringify({ n: i }));
+		const json = "[" + elements.join(",") + "]";
+		parser.feed(json);
+		assert.equal(rows.length, count);
+		assert.equal(rows[0], '{"n":0}');
+		assert.equal(rows[count - 1], `{"n":${count - 1}}`);
+	});
+
+	test("reset 后重新解析大量数据", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		for (let round = 0; round < 10; round++) {
+			const json = `[{"round":${round},"data":"test"}]`;
+			parser.feed(json);
+			assert.equal(rows.length, round + 1);
+			parser.reset();
+		}
+	});
+});

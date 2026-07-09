@@ -718,3 +718,261 @@ describe("handleStderrChunk", () => {
 		assert.equal(pendingTask.stderrText, "", "pendingFinalize 任务不应获得 stderr（不传播）");
 	});
 });
+
+describe("fuzz: pipelineUtils", () => {
+	describe("fuzz: handleStderrChunk", () => {
+		test("随机 stderr 模式不崩溃", () => {
+			const inflight = new InflightTracker();
+			const pendingFinalizeTasks = new Set();
+			const logger = { error: () => {} };
+
+			for (let i = 0; i < 500; i++) {
+				// 随机填充 inflight 和 pendingFinalize
+				if (Math.random() < 0.5) {
+					inflight.push({
+						kind: Math.random() > 0.5 ? "query" : "execute",
+						stderrText: "",
+						batchId: Math.random() > 0.5 ? `batch-${i}` : null,
+						walBatch: Math.random() > 0.5,
+						rows: [],
+					});
+				}
+				if (Math.random() < 0.5) {
+					pendingFinalizeTasks.add({
+						kind: Math.random() > 0.5 ? "query" : "execute",
+						stderrText: "",
+						batchId: Math.random() > 0.5 ? `batch-${i}` : null,
+						walBatch: Math.random() > 0.5,
+						rows: Math.random() > 0.5 ? [{ id: 1 }] : [],
+					});
+				}
+
+				const chunk = `error message ${i}: ${Math.random().toString(36).slice(2)}`;
+				try {
+					handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logger });
+				} catch (e) {
+					assert.fail(`handleStderrChunk 不应抛出异常: ${e.message}`);
+				}
+
+				// 清理
+				if (Math.random() < 0.3) {
+					inflight.clear();
+					pendingFinalizeTasks.clear();
+				}
+			}
+		});
+
+		test("大量并发 stderr 不崩溃", () => {
+			const inflight = new InflightTracker();
+			const pendingFinalizeTasks = new Set();
+			const logger = { error: () => {} };
+
+			// 填充大量 inflight 任务（无 pendingFinalize，避免零行归因优先）
+			for (let i = 0; i < 50; i++) {
+				inflight.push({
+					kind: "execute",
+					stderrText: "",
+					batchId: "batch-1",
+					walBatch: true,
+				});
+			}
+
+			// 发送大量 stderr
+			for (let i = 0; i < 50; i++) {
+				handleStderrChunk(`error ${i}`, { inflight, pendingFinalizeTasks, logger });
+			}
+
+			// 所有 inflight 任务应收到 stderr（WAL batch 传播）
+			inflight.forEach((t) => {
+				assert.ok(t.stderrText.length > 0, "WAL batch inflight 任务应收到 stderr");
+			});
+		});
+	});
+
+	describe("fuzz: handleParsedValue", () => {
+		test("随机 JSON 值不崩溃", () => {
+			const inflight = new InflightTracker();
+			const task = { token: "tok-1", kind: "query", rows: [], timedout: false };
+			inflight.push(task);
+
+			const jsonValues = [
+				'[{"id":1}]',
+				'[{"id":1},{"id":2}]',
+				"[]",
+				"[1,2,3]",
+				'["a","b","c"]',
+				"[null,true,false]",
+				'[{"nested":{"a":1}}]',
+				'[{"__sqlite_executor_token__":"tok-1"}]',
+				"[[]]",
+				"[{}]",
+			];
+
+			for (const json of jsonValues) {
+				try {
+					handleParsedValue(json, inflight, {
+						afterSentinel: () => {},
+						rejectAll: () => {},
+					});
+				} catch (e) {
+					assert.fail(`handleParsedValue 不应抛出异常: ${e.message}`);
+				}
+			}
+		});
+
+		test("大量数据行收集", () => {
+			const inflight = new InflightTracker();
+			const rows = [];
+			const task = { token: "tok-1", kind: "query", rows, timedout: false };
+			inflight.push(task);
+
+			const large = Array.from({ length: 10000 }, (_, i) => ({ id: i }));
+			const json = JSON.stringify(large);
+			handleParsedValue(json, inflight, {
+				afterSentinel: () => {},
+				rejectAll: () => {},
+			});
+
+			assert.equal(rows.length, 10000);
+		});
+	});
+
+	describe("fuzz: finalizePendingTasks", () => {
+		test("大量任务批量结算", () => {
+			const tasks = new Set();
+			const settleCalls = [];
+			for (let i = 0; i < 500; i++) {
+				tasks.add({
+					kind: Math.random() > 0.5 ? "query" : "execute",
+					rows: Math.random() > 0.5 ? [{ id: i }] : [],
+					stderrText: Math.random() > 0.8 ? `error ${i}` : "",
+					consumerError: Math.random() > 0.9 ? new Error(`consumer ${i}`) : null,
+				});
+			}
+
+			finalizePendingTasks(
+				tasks,
+				(task, error, value) => settleCalls.push({ error, value }),
+				() => {},
+			);
+
+			assert.equal(settleCalls.length, 500);
+			assert.equal(tasks.size, 0);
+		});
+
+		test("pendingStderr 缓冲归因", () => {
+			const tasks = new Set();
+			const settleCalls = [];
+			const pendingStderr = ["error from buffer"];
+
+			tasks.add({
+				kind: "query",
+				rows: [],
+				stderrText: "",
+				consumerError: null,
+			});
+			tasks.add({
+				kind: "query",
+				rows: [{ id: 1 }],
+				stderrText: "",
+				consumerError: null,
+			});
+
+			finalizePendingTasks(
+				tasks,
+				(task, error, value) => settleCalls.push({ error, value }),
+				() => {},
+				pendingStderr,
+				{ count: 0 },
+			);
+
+			// 零行 query 应收到缓冲的 stderr
+			assert.ok(settleCalls[0].error instanceof Error);
+			assert.ok(settleCalls[0].error.message.includes("error from buffer"));
+			// 有行 query 不应收到 stderr
+			assert.equal(settleCalls[1].error, null);
+		});
+	});
+
+	describe("fuzz: createPumpQueue", () => {
+		test("大量任务泵送不崩溃", () => {
+			const queue = new Queue();
+			const inflight = new InflightTracker();
+			const pm = {
+				draining: false,
+				written: [],
+				write(data) { this.written.push(data); },
+				onDrained() {},
+			};
+			const sweeper = {
+				scheduleCalls: 0,
+				schedule() { this.scheduleCalls++; },
+				clear() {},
+			};
+
+			// 填充 1000 个任务
+			for (let i = 0; i < 1000; i++) {
+				queue.enqueue({
+					kind: i % 3 === 0 ? "query" : "execute",
+					sql: `SELECT ${i}`,
+					token: `tok-${i}`,
+				});
+			}
+
+			const pump = createPumpQueue({
+				queue, inflight, processManager: pm, sweeper,
+				batchSize: 50, maxInflight: 100,
+			});
+
+			// 分批泵送
+			let totalWritten = 0;
+			while (!queue.isEmpty() && inflight.count < 100) {
+				pump();
+				if (pm.written.length > totalWritten) {
+					totalWritten = pm.written.length;
+				}
+				// 模拟完成一些任务
+				if (inflight.count > 50) {
+					for (let i = 0; i < 20; i++) {
+						inflight.shift();
+					}
+				}
+			}
+
+			assert.ok(pm.written.length > 0, "应有写入");
+			assert.ok(sweeper.scheduleCalls > 0, "sweeper 应被调度");
+		});
+	});
+
+	describe("fuzz: rejectAllTasks", () => {
+		test("大量任务拒绝不崩溃", () => {
+			const inflight = new InflightTracker();
+			const queue = new Queue();
+			const pendingFinalizeTasks = new Set();
+			const settled = [];
+
+			for (let i = 0; i < 500; i++) {
+				inflight.push({ id: i, kind: "inflight" });
+			}
+			for (let i = 0; i < 500; i++) {
+				queue.enqueue({ id: i + 500, kind: "queue" });
+			}
+			for (let i = 0; i < 500; i++) {
+				pendingFinalizeTasks.add({ id: i + 1000, kind: "pending" });
+			}
+
+			rejectAllTasks({
+				inflight,
+				queue,
+				pendingFinalizeTasks,
+				settleTask: (task, error, value) => settled.push({ task, error, value }),
+				error: new Error("mass rejection"),
+			});
+
+			assert.equal(settled.length, 1500);
+			assert.equal(inflight.count, 0);
+			assert.equal(queue.isEmpty(), true);
+			assert.equal(pendingFinalizeTasks.size, 0);
+		});
+	});
+});

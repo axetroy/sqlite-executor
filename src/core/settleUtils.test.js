@@ -231,3 +231,97 @@ describe("settleTask", () => {
 	});
 
 });
+
+describe("fuzz: settleTask", () => {
+	test("随机任务对象不崩溃", () => {
+		const metrics = new Metrics();
+		for (let i = 0; i < 1000; i++) {
+			const task = {
+				settled: Math.random() > 0.8,
+				timer: Math.random() > 0.5 ? setTimeout(() => {}, 100000) : null,
+				startTime: Math.random() > 0.3 ? Math.floor(Math.random() * 10000) : 0,
+				rowParser: Math.random() > 0.5 ? { reset: () => {} } : null,
+				resolve: () => {},
+				reject: () => {},
+			};
+			const error = Math.random() > 0.5 ? new Error("random fail") : null;
+			const value = Math.random() > 0.5 ? { data: Math.random() } : undefined;
+			try {
+				settleTask(task, error, value, metrics, { resetRowParser: Math.random() > 0.5 });
+			} catch (e) {
+				assert.fail(`settleTask 不应抛出异常: ${e.message}`);
+			}
+			if (task.timer) clearTimeout(task.timer);
+		}
+	});
+
+	test("重复 settle 安全（幂等性）", () => {
+		const task = {
+			settled: false,
+			timer: null,
+			startTime: 100,
+			rowParser: null,
+			resolve: () => {},
+			reject: () => {},
+		};
+		settleTask(task, null, "ok", null);
+		settleTask(task, null, "ok", null);
+		settleTask(task, new Error("fail"), undefined, null);
+		// 不应抛出异常
+		assert.equal(task.settled, true);
+	});
+
+	test("大量并发 settle 不冲突", () => {
+		const metrics = new Metrics();
+		const tasks = [];
+		for (let i = 0; i < 100; i++) {
+			tasks.push({
+				settled: false,
+				timer: null,
+				startTime: i * 10,
+				rowParser: null,
+				resolve: () => {},
+				reject: () => {},
+			});
+		}
+		for (const task of tasks) {
+			settleTask(task, null, "ok", metrics);
+		}
+		const s = metrics.snapshot();
+		assert.equal(s.tasksSuccess, 100);
+		assert.equal(s.tasksFailed, 0);
+	});
+
+	test("collectQueryRows 大量数据", () => {
+		const task = { rows: [] };
+		const large = Array.from({ length: 10000 }, (_, i) => ({ id: i }));
+		collectQueryRows(task, large);
+		assert.equal(task.rows.length, 10000);
+	});
+
+	test("processStreamRows 大量数据", () => {
+		let count = 0;
+		const task = {
+			onRow: () => { count++; },
+			consumerError: null,
+		};
+		const large = Array.from({ length: 10000 }, (_, i) => ({ id: i }));
+		processStreamRows(task, large);
+		assert.equal(count, 10000);
+	});
+
+	test("processStreamRows 在 consumerError 后停止", () => {
+		let count = 0;
+		const task = {
+			onRow: (row) => {
+				count++;
+				if (row.id === 50) throw new Error("stop");
+			},
+			consumerError: null,
+		};
+		const large = Array.from({ length: 1000 }, (_, i) => ({ id: i }));
+		processStreamRows(task, large);
+		assert.equal(count, 51);
+		assert.ok(task.consumerError);
+	});
+});
