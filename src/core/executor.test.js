@@ -750,18 +750,18 @@ describe("SQLiteExecutor", () => {
 		});
 
 		test("随机超时：短超时 + 慢查询不阻塞正常操作", async () => {
+			// 先用默认超时建表（防止 CI 环境 sqlite3 进程启动 + 建表超过 100ms 导致误超时）
+			await sqlite.execute("CREATE TABLE IF NOT EXISTS random_timeout (id INTEGER PRIMARY KEY, val TEXT)");
+
 			const timeoutSqlite = new SQLiteExecutor({
 				binary: SQLite3BinaryFile,
-				statementTimeout: 100, // 100ms——足够正常查询完成, 但 moderate blob 可能超时
+				statementTimeout: 500, // 500ms——足够正常查询完成, 但 moderate blob 可能超时
 			});
 			try {
-				// 先建表
-				await timeoutSqlite.execute("CREATE TABLE IF NOT EXISTS random_timeout (id INTEGER PRIMARY KEY, val TEXT)");
-
 				// 并行发送多个 moderate randomblob 查询（可能超时）+ 正常操作，验证隔离性
 				const slowOps = [];
 				for (let i = 0; i < 8; i++) {
-					// 使用 moderate 大小的 blob (500KB-2MB)，小到不会拖慢测试，大到可能在 100ms 内超时
+					// 使用 moderate 大小的 blob (500KB-2MB)，小到不会拖慢测试，大到可能在 500ms 内超时
 					const size = 500000 + Math.floor(Math.random() * 1500000);
 					slowOps.push(timeoutSqlite.query(`SELECT randomblob(${size}) AS big`));
 				}
