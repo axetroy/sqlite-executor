@@ -46,7 +46,18 @@ function isTransactionControl(sql) {
  * 由 PipelineEngine 和 TaskWorker 共享，避免 25 行重复 payload 构建逻辑。
  *
  * 如果全是 execute 类型且数量 > 1，自动使用 WAL 批量优化：
- * 将多条 INSERT/UPDATE 用 BEGIN/COMMIT 包裹后再追加各自的 sentinel token。
+ * 将多条 INSERT/UPDATE 用 BEGIN/COMMIT 包裹，每条语句后紧跟其 sentinel token。
+ *
+ * ★ WAL batch sentinel 交错模式
+ * 传统格式将所有 SQL 放在一起、所有 sentinel 放在末尾（`BEGIN; T1; T2; COMMIT; tok1; tok2`），
+ * 这导致最后一条 SQL 的 sentinel 要等前面所有 SQL 执行完才到达，而全部任务的 startTime
+ * 都在 pump 时统一设置，因此后面任务的 elapsed 会累积前面任务的执行时间，在大量 SQL
+ * 场景下容易误触超时。
+ *
+ * 新格式将 sentinel 交错在每条 SQL 之后（`BEGIN; T1; tok1; T2; tok2; COMMIT`），
+ * 使得每条 SQL 的 sentinel 紧随其自身执行完毕即到达。结合 handleParsedValue 中
+ * 对 next inflight task 的 startTime 前移机制，确保每条任务的 timeout 倒计时
+ * 只计算其自身的执行时间，而非 batch 中前面所有任务的累积时间。
  *
  * WAL batch 会自动跳过事务控制语句（BEGIN / COMMIT / ROLLBACK），
  * 避免 BEGIN/COMMIT 被 WAL batch 的 BEGIN/COMMIT 再次包裹导致事务嵌套异常。
@@ -60,11 +71,9 @@ export function buildBatchPayload(batch) {
 		const parts = ["BEGIN;\n"];
 		for (const task of batch) {
 			parts.push(task.sql, "\n");
-		}
-		parts.push("COMMIT;\n");
-		for (const task of batch) {
 			parts.push(`SELECT '${task.token}' AS ${TOKEN_COLUMN};\n`);
 		}
+		parts.push("COMMIT;\n");
 		return parts.join("");
 	}
 

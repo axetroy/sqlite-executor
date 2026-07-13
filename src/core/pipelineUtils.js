@@ -159,6 +159,26 @@ export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: sett
  *   rejectAll: (error: Error) => void,
  * }} callbacks
  */
+/**
+ * sentinel 到达时将下一个 inflight 任务的 startTime 前移到当前时间，
+ * 防止该任务的超时倒计时累积前面任务的执行等待时间。
+ *
+ * 在大量 SQL 执行场景下，后续任务虽然 SQL 很快，但可能因前面排队任务的
+ * 累积执行时间而误触 timeout。此回调确保每个任务的 timeout 从"前一个任务
+ * 完成时刻"开始计算，而非从"整批写入 stdin 的时刻"。
+ *
+ * @param {import("./inflightTracker.js").InflightTracker} inflight
+ */
+function advanceNextInflightStartTime(inflight) {
+	const next = inflight.first;
+	if (next && next.startTime > 0) {
+		const now = performance.now();
+		if (now > next.startTime) {
+			next.startTime = now;
+		}
+	}
+}
+
 export function handleParsedValue(raw, inflight, { afterSentinel, rejectAll }) {
 	const task = inflight.first;
 	if (!task) return;
@@ -166,6 +186,7 @@ export function handleParsedValue(raw, inflight, { afterSentinel, rejectAll }) {
 	// Fast path: 原始字符串精确匹配 sentinel，跳过 JSON.parse
 	if (isSentinelRaw(raw, task.token)) {
 		inflight.shift();
+		advanceNextInflightStartTime(inflight);
 		afterSentinel(task);
 		return;
 	}
@@ -183,6 +204,7 @@ export function handleParsedValue(raw, inflight, { afterSentinel, rejectAll }) {
 
 	if (isSentinelRow(parsed, task.token)) {
 		inflight.shift();
+		advanceNextInflightStartTime(inflight);
 		afterSentinel(task);
 		return;
 	}

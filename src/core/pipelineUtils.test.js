@@ -414,6 +414,107 @@ describe("handleParsedValue", () => {
 		});
 		assert.deepEqual(streamRows, ["a", "b", "c"]);
 	});
+
+	// ─── advanceNextInflightStartTime 回归测试 ────────────
+
+	test("isSentinelRaw 路径将下一个 inflight 任务的 startTime 前移", () => {
+		const inflight = new InflightTracker();
+		// startTime 比当前 performance.now() 小，模拟已执行了一段时间的旧任务
+		const earlier = Math.max(1, performance.now() - 1000);
+		const t1 = { token: "tok-1", startTime: earlier, timeout: 30000 };
+		const t2 = { token: "tok-2", startTime: earlier, timeout: 30000 };
+		inflight.push(t1, t2);
+
+		// 确保 earlier < before，即 startTime 在调用前确实处于"过去"
+		const before = performance.now();
+		assert.ok(before > earlier, "precondition: before > earlier");
+
+		handleParsedValue(`[{"__sqlite_executor_token__":"tok-1"}]`, inflight, {
+			afterSentinel: () => {},
+			rejectAll: () => {},
+		});
+
+		assert.equal(inflight.count, 1, "t1 应被移出 inflight");
+		assert.ok(t2.startTime >= before, "t2 的 startTime 应被前移到至少当前时刻");
+		assert.ok(t2.startTime > earlier, "t2 的 startTime 应大于旧值（已更新）");
+	});
+
+	test("isSentinelRow 路径也将下一个 inflight 任务的 startTime 前移", () => {
+		const inflight = new InflightTracker();
+		const earlier = Math.max(1, performance.now() - 1000);
+		const t1 = { token: "tok-fallback", startTime: earlier, timeout: 30000 };
+		const t2 = { token: "tok-other", startTime: earlier, timeout: 30000 };
+		inflight.push(t1, t2);
+
+		const before = performance.now();
+		// isSentinelRaw 因 JSON 含额外空格失败，走 isSentinelRow 回退路径
+		handleParsedValue(`[{"__sqlite_executor_token__" : "tok-fallback"}]`, inflight, {
+			afterSentinel: () => {},
+			rejectAll: () => {},
+		});
+
+		assert.equal(inflight.count, 1, "t1 应被移出 inflight");
+		assert.ok(t2.startTime >= before, "isSentinelRow 路径下 t2 的 startTime 也应前移");
+	});
+
+	test("仅剩一个 inflight 任务时 startTime 不前移（无下一个任务）", () => {
+		const inflight = new InflightTracker();
+		const t1 = { token: "tok-1", startTime: Math.max(1, performance.now() - 500), timeout: 30000 };
+		inflight.push(t1);
+
+		handleParsedValue(`[{"__sqlite_executor_token__":"tok-1"}]`, inflight, {
+			afterSentinel: () => {},
+			rejectAll: () => {},
+		});
+
+		assert.equal(inflight.count, 0, "t1 应被移出 inflight");
+		// 无下一个任务，不应报错，不应有副作用
+	});
+
+	test("下一个任务 startTime 为 0 时不前移（未 pump 的任务）", () => {
+		const inflight = new InflightTracker();
+		const t1 = { token: "tok-1", startTime: Math.max(1, performance.now() - 500), timeout: 30000 };
+		const t2 = { token: "tok-2", startTime: 0, timeout: 30000 }; // startTime=0 表示尚未 pump
+		inflight.push(t1, t2);
+
+		handleParsedValue(`[{"__sqlite_executor_token__":"tok-1"}]`, inflight, {
+			afterSentinel: () => {},
+			rejectAll: () => {},
+		});
+
+		assert.equal(inflight.count, 1, "t1 应被移出 inflight");
+		assert.equal(t2.startTime, 0, "startTime=0 的任务不应被前移");
+	});
+
+	test("多个 sentinel 依次到达时逐个前移剩余任务的 startTime", async () => {
+		const inflight = new InflightTracker();
+		const earlier = Math.max(1, performance.now() - 2000);
+		const t1 = { token: "tok-a", startTime: earlier, timeout: 30000 };
+		const t2 = { token: "tok-b", startTime: earlier, timeout: 30000 };
+		const t3 = { token: "tok-c", startTime: earlier, timeout: 30000 };
+		inflight.push(t1, t2, t3);
+
+		// 第 1 个 sentinel 到达 → t1 出队，t2.startTime 前移
+		const before1 = performance.now();
+		handleParsedValue(`[{"__sqlite_executor_token__":"tok-a"}]`, inflight, {
+			afterSentinel: () => {},
+			rejectAll: () => {},
+		});
+		assert.ok(t2.startTime >= before1, "t2 的 startTime 应在第 1 次 sentinel 后被前移");
+		assert.equal(t2.startTime, inflight.first.startTime, "t2 现在是 inflight 首任务");
+
+		// 短暂等待让时间推进，确保能检测到变化
+		await sleep(5);
+
+		// 第 2 个 sentinel 到达 → t2 出队，t3.startTime 前移
+		const before2 = performance.now();
+		handleParsedValue(`[{"__sqlite_executor_token__":"tok-b"}]`, inflight, {
+			afterSentinel: () => {},
+			rejectAll: () => {},
+		});
+		assert.ok(t3.startTime >= before2, "t3 的 startTime 应在第 2 次 sentinel 后被前移");
+		assert.equal(inflight.count, 1, "只剩 t3 在 inflight 中");
+	});
 });
 
 // ─── createPumpQueue ───

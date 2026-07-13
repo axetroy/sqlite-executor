@@ -154,6 +154,11 @@ describe("buildBatchPayload", () => {
 		for (const t of batch) {
 			assert.ok(payload.includes(t.token), `应包含 token ${t.token}`);
 		}
+		// 验证 sentinel 交错在 COMMIT 之前（新格式），而非之后（旧格式）
+		const firstTokenIdx = payload.indexOf("t1");
+		const commitIdx = payload.indexOf("COMMIT;");
+		assert.ok(firstTokenIdx > 0 && commitIdx > 0, "t1 和 COMMIT 都应存在");
+		assert.ok(firstTokenIdx < commitIdx, "sentinel 应出现在 COMMIT 之前（交错模式）");
 	});
 
 	test("包含 BEGIN TRANSACTION 时不使用 WAL batch", () => {
@@ -166,7 +171,7 @@ describe("buildBatchPayload", () => {
 
 	test("BEGIN; 精确匹配也被视为事务控制", () => {
 		// 非 WAL batch 模式：每个任务携带独立 sentinel token
-		// WAL batch:  BEGIN;\nTASK1_SQL\nTASK2_SQL\nCOMMIT;\nSELECT 'token1'...\nSELECT 'token2'...
+		// WAL batch:  BEGIN;\nTASK1_SQL\nSELECT 'token1'...\nTASK2_SQL\nSELECT 'token2'...\nCOMMIT;\n
 		// 非 WAL:     TASK1_SQL;\nSELECT 'token1'...\nTASK2_SQL;\nSELECT 'token2'...
 		const payload = buildBatchPayload([
 			{ kind: "execute", sql: "BEGIN;", token: "t1" },
@@ -299,5 +304,71 @@ describe("buildBatchPayload", () => {
 			{ kind: "execute", sql: "rollback", token: "t2" },
 		]);
 		assert.ok(payload.startsWith("BEGIN;\n"), "小写 rollback 未命中大写检查，WAL batch 被使用");
+	});
+
+	// ─── WAL batch 交错格式回归测试 ──────────────────────
+
+	test("WAL batch payload 精确验证逐行交错结构（3 任务）", () => {
+		const batch = [
+			{ kind: "execute", sql: "INSERT INTO a VALUES (1)", token: "ta" },
+			{ kind: "execute", sql: "INSERT INTO b VALUES (2)", token: "tb" },
+			{ kind: "execute", sql: "INSERT INTO c VALUES (3)", token: "tc" },
+		];
+		const payload = buildBatchPayload(batch);
+		// 按换行分割，过滤末尾空行
+		const lines = payload.split("\n").filter((l) => l.length > 0);
+
+		// 期望行序列：
+		//   BEGIN;
+		//   INSERT INTO a VALUES (1);
+		//   SELECT 'ta' AS __sqlite_executor_token__;
+		//   INSERT INTO b VALUES (2);
+		//   SELECT 'tb' AS __sqlite_executor_token__;
+		//   INSERT INTO c VALUES (3);
+		//   SELECT 'tc' AS __sqlite_executor_token__;
+		//   COMMIT;
+		assert.equal(lines[0], "BEGIN;");
+		assert.ok(lines[1].includes("INSERT INTO a VALUES (1)"), "line[1] = T1 SQL");
+		assert.ok(lines[2].includes("SELECT 'ta'"), "line[2] = T1 sentinel");
+		assert.ok(lines[3].includes("INSERT INTO b VALUES (2)"), "line[3] = T2 SQL");
+		assert.ok(lines[4].includes("SELECT 'tb'"), "line[4] = T2 sentinel");
+		assert.ok(lines[5].includes("INSERT INTO c VALUES (3)"), "line[5] = T3 SQL");
+		assert.ok(lines[6].includes("SELECT 'tc'"), "line[6] = T3 sentinel");
+		assert.equal(lines[7], "COMMIT;");
+		assert.equal(lines.length, 8, "共 8 非空行");
+	});
+
+	test("WAL batch 每个 sentinel 紧随其 SQL 之后（在下一个 SQL 之前）", () => {
+		const batch = [
+			{ kind: "execute", sql: "INSERT INTO x VALUES (1)", token: "t1" },
+			{ kind: "execute", sql: "INSERT INTO y VALUES (2)", token: "t2" },
+			{ kind: "execute", sql: "INSERT INTO z VALUES (3)", token: "t3" },
+		];
+		const payload = buildBatchPayload(batch);
+		// 验证 t1 的 sentinel 出现在 t2 的 SQL 之前
+		const t1SentinelPos = payload.indexOf("SELECT 't1'");
+		const t2SqlPos = payload.indexOf("INSERT INTO y");
+		const commitPos = payload.indexOf("COMMIT;");
+		assert.ok(t1SentinelPos > 0 && t2SqlPos > 0 && commitPos > 0);
+		assert.ok(t1SentinelPos < t2SqlPos, "T1 sentinel 在 T2 SQL 之前");
+		// 验证 t3 sentinel 出现在 COMMIT 之前
+		const t3SentinelPos = payload.indexOf("SELECT 't3'");
+		assert.ok(t3SentinelPos < commitPos, "T3 sentinel 在 COMMIT 之前");
+	});
+
+	test("stream 类型不使用 WAL batch", () => {
+		const payload = buildBatchPayload([
+			{ kind: "execute", sql: "INSERT INTO t VALUES (1)", token: "t1" },
+			{ kind: "stream", sql: "SELECT 1", token: "t2", onRow: null },
+		]);
+		assert.ok(!payload.startsWith("BEGIN;"), "含 stream 任务不应使用 WAL batch");
+	});
+
+	test("execute + query 混合不使用 WAL batch（严格验证非 BEGIN 开头）", () => {
+		const payload = buildBatchPayload([
+			{ kind: "execute", sql: "INSERT INTO t VALUES (1)", token: "t1" },
+			{ kind: "query", sql: "SELECT 1", token: "t2" },
+		]);
+		assert.ok(!payload.startsWith("BEGIN;"), "含 query 任务不应使用 WAL batch");
 	});
 });
