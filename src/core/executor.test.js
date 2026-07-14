@@ -695,9 +695,24 @@ describe("SQLiteExecutor", () => {
 			);
 
 			for (let s = 0; s < streamCount; s++) {
-				assert.equal(allRows[s].length, N, `stream ${s} 应返回 ${N} 行`);
-				for (let i = 0; i < N; i++) {
-					assert.ok(Math.abs(allRows[s][i] - expected[i]) < 1e-6, `stream ${s} 行 ${i} 不匹配`);
+				try {
+					assert.equal(allRows[s].length, N, `stream ${s} 应返回 ${N} 行`);
+					for (let i = 0; i < N; i++) {
+						assert.ok(Math.abs(allRows[s][i] - expected[i]) < 1e-6, `stream ${s} 行 ${i} 不匹配`);
+					}
+				} catch (err) {
+					console.error("=== TEST FAILURE DEBUG INFO ===");
+					console.error("N:", N);
+					console.error("streamCount:", streamCount);
+					console.error("stream index:", s);
+					console.error("expected length:", N);
+					console.error("actual length:", allRows[s]?.length);
+					console.error("expected (first 10):", expected.slice(0, 10));
+					console.error("actual (first 10):", allRows[s]?.slice(0, 10));
+					console.error("expected (last 10):", expected.slice(-10));
+					console.error("actual (last 10):", allRows[s]?.slice(-10));
+					console.error("allRows JSON parse error sample (rawRow):", err.message);
+					throw err;
 				}
 			}
 		});
