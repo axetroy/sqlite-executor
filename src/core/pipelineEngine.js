@@ -37,9 +37,9 @@ export class PipelineEngine {
 	#pendingStderr = [];
 
 	/**
-	 * 标记上一批中是否存在已结算的零行 query 任务。
+	 * 标记此前是否已结算过零行 query 任务（无论成功或失败）。
 	 * 若为 true，则 handleStderrChunk 中零行 inflight query 的 stderr
-	 * 可能是来自上一批的延迟 stderr，应缓冲到 #pendingStderr 而非直接归因。
+	 * 可能是来自已结算任务的延迟/残余 stderr，应缓冲到 #pendingStderr 而非直接归因。
 	 */
 	#hasFinalizedZeroRowQuery = false;
 
@@ -216,10 +216,14 @@ export class PipelineEngine {
 	}
 
 	#settleTask(task, error, value) {
-		// 零行 query 任务成功结算（无错误）说明其 stderr 可能仍未到达，
-		// 标记 #hasFinalizedZeroRowQuery 以提醒 handleStderrChunk
-		// 延迟的 stderr 应缓冲到 pendingStderr 而非归因给后续 inflight 任务。
-		if (!error && task.kind === "query" && task.rows?.length === 0) {
+		// 零行 query 任务结算后，其对应的 stderr 可能仍有残余分片在途：
+		//   - 成功结算（无错误）：stderr 尚未到达
+		//   - 失败结算（有错误）：部分 stderr 已到达并归因，但同一条错误消息
+		//     可能被 OS 管道拆分，剩余分片仍会在稍后到达（Windows/macOS 常见）
+		// 两种情况下，后续到达的延迟 stderr 都不应归因给新的 inflight query，
+		// 故标记 #hasFinalizedZeroRowQuery 提醒 handleStderrChunk 将其缓冲到
+		// pendingStderr，交由零行归因机制兜底。
+		if (task.kind === "query" && task.rows?.length === 0) {
 			this.#hasFinalizedZeroRowQuery = true;
 		}
 		settleTask(task, error, value, this.#metrics, { resetRowParser: true });
