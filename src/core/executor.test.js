@@ -598,6 +598,38 @@ describe("SQLiteExecutor", () => {
 			assert.equal(final[0].val, "init", "初始数据未被破坏");
 		});
 
+		// ─── 回归测试：大量非法 SQL 产生延迟 stderr ───
+		// 当大量非法 SQL 与合法 SQL 混发时，sqlite3 对每条非法 SQL 输出 stderr。
+		// 由于 OS 管道缓冲，部分 stderr 可能在 sentinel（stdout）之后才到达 Node.js。
+		// 若此时延迟 stderr 抵达时新的验证查询正在 inflight，该查询会被错误拒绝。
+		// 见 #1957。
+		test("大量非法 SQL 并发执行不污染后续验证查询（回归 #1957）", async () => {
+			await sqlite.execute("CREATE TABLE IF NOT EXISTS stress_stderr (id INTEGER PRIMARY KEY, val TEXT)");
+			await sqlite.execute("INSERT INTO stress_stderr (id, val) VALUES (1, 'root')");
+
+			const INVALID_COUNT = 200;
+			const ops = [];
+
+			// 合法操作：少量稳定查询
+			for (let i = 0; i < 10; i++) {
+				ops.push(sqlite.query("SELECT id, val FROM stress_stderr WHERE id = 1"));
+				ops.push(sqlite.execute("INSERT INTO stress_stderr (id, val) VALUES (?, ?)", [i + 100, `v-${i}`]));
+			}
+
+			// 非法操作：大量语法错误 → 产生大量 stderr，增加延迟到达概率
+			for (let i = 0; i < INVALID_COUNT; i++) {
+				ops.push(sqlite.query("SELECT FORM stress_stderr WHERE id = 1"));
+			}
+
+			// 所有并发操作完成
+			await Promise.allSettled(ops);
+
+			// 验证查询：若 stderr 竞态触发，此查询会被错误 reject
+			const final = await sqlite.query("SELECT id, val FROM stress_stderr WHERE id = 1 ORDER BY id ASC");
+			assert.ok(final.length >= 1, "初始数据未被破坏");
+			assert.equal(final[0].val, "root", "初始数据未被破坏");
+		});
+
 		test("随机数据 round-trip：大型随机字符串和浮点数混合", async () => {
 			await sqlite.execute("CREATE TABLE IF NOT EXISTS random_fuzz (id INTEGER PRIMARY KEY, txt TEXT, num REAL, big_val INTEGER, nullable TEXT)");
 

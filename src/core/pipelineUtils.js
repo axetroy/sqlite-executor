@@ -326,9 +326,10 @@ export function handleSentinelTask(task, { settleTask, pendingFinalizeTasks, sch
  *   pendingFinalizeTasks: Set<object>,
  *   logger?: { error?: (msg: string) => void },
  *   pendingStderr?: string[],
+ *   hasFinalizedZeroRowQuery?: boolean,
  * }} params
  */
-export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logger, pendingStderr }) {
+export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logger, pendingStderr, hasFinalizedZeroRowQuery }) {
 	const inflightFirst = inflight.first;
 	const firstPending = pendingFinalizeTasks.values().next().value;
 
@@ -394,14 +395,32 @@ export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logge
 			} else if (task.kind === "query" && task.rows.length > 0) {
 				// inflight 任务已有数据行：它是合法查询，stderr 不来自它。
 				logger?.error?.(chunk.trim());
+			} else if (task.kind === "query" && task.rows.length === 0) {
+				// inflight query 尚无数据行 —— 根据标志位判断 stderr 来源：
+				// hasFinalizedZeroRowQuery=true  → 来自已结算的上一批任务（延迟 stderr #1957）
+				// hasFinalizedZeroRowQuery=false → 来自当前 inflight 任务（即时归因）
+				if (hasFinalizedZeroRowQuery) {
+					pendingStderr?.push(chunk);
+				} else {
+					task.stderrText += chunk;
+				}
 			} else {
 				// 唯一 inflight 任务，pending 中无零行 query：
-				// stderr 只能来自该 inflight 任务。
+				// stderr 只能来自该 inflight 任务（execute）。
 				task.stderrText += chunk;
 			}
 		} else if (task.kind === "query" && task.rows.length > 0) {
 			// 唯一的 inflight 任务已有数据行：它是合法查询，stderr 不来自它。
 			logger?.error?.(chunk.trim());
+		} else if (task.kind === "query" && task.rows.length === 0) {
+			// 唯一的 inflight query 尚无数据行 —— 根据标志位判断：
+			// hasFinalizedZeroRowQuery=true  → 来自已结算的上一批任务（延迟 stderr #1957）
+			// hasFinalizedZeroRowQuery=false → 来自当前 inflight 任务（即时归因）
+			if (hasFinalizedZeroRowQuery) {
+				pendingStderr?.push(chunk);
+			} else {
+				task.stderrText += chunk;
+			}
 		} else {
 			// 唯一的 inflight 任务，无其他待结算任务：可以安全归因
 			task.stderrText += chunk;

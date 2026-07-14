@@ -756,8 +756,9 @@ describe("handleStderrChunk", () => {
 	function makeContext() {
 		const pendingFinalizeTasks = new Set();
 		const inflight = new InflightTracker();
+		const pendingStderr = /** @type {string[]} */([]);
 		const logger = { errorCalls: /** @type {string[]} */([]), error(msg) { this.errorCalls.push(msg); } };
-		return { inflight, pendingFinalizeTasks, logger };
+		return { inflight, pendingFinalizeTasks, pendingStderr, logger };
 	}
 
 	test("无匹配任务时通过 logger 输出", () => {
@@ -817,6 +818,39 @@ describe("handleStderrChunk", () => {
 		assert.ok(inflightTask.stderrText.includes("batch error"), "inflight 任务获得 stderr（优先归因）");
 		// pendingFinalize 任务不应被传播，它已收到 sentinel 并完成执行
 		assert.equal(pendingTask.stderrText, "", "pendingFinalize 任务不应获得 stderr（不传播）");
+	});
+
+	// ─── 回归测试：延迟 stderr 竞态 ───
+	// 场景：一批非法 SQL 被执行 → sentinel 先于 stderr 到达 → 任务被顺利结算
+	// （pendingFinalizeTasks 已清空）→ 新的 inflight 查询开始执行 →
+	// 延迟的 stderr 到达 → 当前代码误将 stderr 归因给新的查询（见 #1957）。
+	// 此测试直接模拟该时序。
+	test("延迟 stderr 不应归因给后续不相关的 inflight 查询（回归 #1957）", () => {
+		const ctx = makeContext();
+
+		// ── 设定场景 ──
+		// 1. pendingFinalizeTasks 已清空 —— 上一批非法查询任务已结算，没有零行匹配
+		// 2. 唯一一个 inflight 任务是后续的新查询（模拟验证查询），rows 尚未到达
+		// 3. hasFinalizedZeroRowQuery=true 模拟上一批零行查询已结算的状态，
+		//    通知 handleStderrChunk 当前 stderr 可能是延迟到达的残余错误
+		const inflightTask = {
+			kind: "query",
+			rows: [],
+			stderrText: "",
+			batchId: 42,
+			walBatch: false,
+		};
+		ctx.inflight.push(inflightTask);
+		ctx.hasFinalizedZeroRowQuery = true;
+
+		// ── 触发：延迟 stderr 到达 ──
+		handleStderrChunk("Parse error near line 1: no such column: FORM\n  SELECT FORM foo;\n", ctx);
+
+		// ── 验证 ──
+		// BUG：不应归因给 inflight 任务，应缓冲到 pendingStderr 由零行归因兜底
+		assert.equal(inflightTask.stderrText, "", "延迟 stderr 不应污染新 inflight 任务");
+		assert.equal(ctx.pendingStderr.length, 1, "stderr 应缓冲到 pendingStderr");
+		assert.ok(ctx.pendingStderr[0].includes("Parse error"), "pendingStderr 内容应正确");
 	});
 });
 

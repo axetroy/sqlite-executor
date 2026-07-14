@@ -37,6 +37,13 @@ export class PipelineEngine {
 	#pendingStderr = [];
 
 	/**
+	 * 标记上一批中是否存在已结算的零行 query 任务。
+	 * 若为 true，则 handleStderrChunk 中零行 inflight query 的 stderr
+	 * 可能是来自上一批的延迟 stderr，应缓冲到 #pendingStderr 而非直接归因。
+	 */
+	#hasFinalizedZeroRowQuery = false;
+
+	/**
 	 * @param {import("./process.js").ProcessManager} processManager
 	 * @param {{
 	 *   metrics: import("./metrics.js").Metrics,
@@ -204,10 +211,17 @@ export class PipelineEngine {
 			pendingFinalizeTasks: this.#pendingFinalizeTasks,
 			logger: this.#logger,
 			pendingStderr: this.#pendingStderr,
+			hasFinalizedZeroRowQuery: this.#hasFinalizedZeroRowQuery,
 		});
 	}
 
 	#settleTask(task, error, value) {
+		// 零行 query 任务成功结算（无错误）说明其 stderr 可能仍未到达，
+		// 标记 #hasFinalizedZeroRowQuery 以提醒 handleStderrChunk
+		// 延迟的 stderr 应缓冲到 pendingStderr 而非归因给后续 inflight 任务。
+		if (!error && task.kind === "query" && task.rows?.length === 0) {
+			this.#hasFinalizedZeroRowQuery = true;
+		}
 		settleTask(task, error, value, this.#metrics, { resetRowParser: true });
 	}
 
