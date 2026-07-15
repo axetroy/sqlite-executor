@@ -7,7 +7,7 @@ export const DEFAULT_STATEMENT_TIMEOUT: 30000;
  *
  * @param timeout   - 超时时间（毫秒）
  * @param sql       - 超时发生时正在执行的 SQL 语句（已规范化）
- * @param startTime - 任务开始时的 performance.now() 值（可选）；提供后会生成人类可读的时间信息
+ * @param startTime - 任务开始时的 Unix 毫秒时间戳或 performance.now() 值（可选）
  * @returns 包含超时时间、时间信息和 SQL 的 Error 实例
  */
 export function createTimeoutError(timeout: number, sql: string, startTime?: number): Error;

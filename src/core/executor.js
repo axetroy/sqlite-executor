@@ -332,6 +332,7 @@ export class SQLiteExecutor {
 				stderrText: "",
 				settled: false,
 				startTime: 0,
+				startedAt: 0,
 				rowParser: null,
 				rows: kind === "query" ? [] : null,
 			};

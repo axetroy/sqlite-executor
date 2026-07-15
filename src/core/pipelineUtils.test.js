@@ -102,6 +102,7 @@ describe("prepareTaskTimeout", () => {
 			timer: null,
 			timeout: 100,
 			sql: "SELECT 1",
+			startedAt: Date.UTC(2025, 0, 2, 3, 4, 5),
 			...overrides,
 		};
 	}
@@ -111,6 +112,8 @@ describe("prepareTaskTimeout", () => {
 		const error = prepareTaskTimeout(task, null);
 		assert.ok(error instanceof Error);
 		assert.ok(error.message.includes("timed out"));
+		assert.ok(error.message.includes("started at 2025-01-02 03:04:05.000 UTC"));
+		assert.ok(error.message.includes("deadline at 2025-01-02 03:04:05.100 UTC"));
 		assert.equal(task.timedout, true);
 	});
 
@@ -144,35 +147,27 @@ describe("prepareTaskTimeout", () => {
 		assert.ok(result instanceof Error);
 	});
 
-	test("错误消息包含人类可读的开始时间和截至时间（当 task 有 startTime 时）", () => {
+	test("错误消息包含人类可读的开始时间和截至时间", () => {
 		const task = makeTask({
 			timeout: 5000,
 			sql: "SELECT * FROM users",
-			startTime: performance.now(),
 		});
 		const error = prepareTaskTimeout(task, null);
 		assert.ok(error instanceof Error);
-		// 应包含人类可读的时间标记
-		assert.ok(error.message.includes("start: "), "应包含开始时间");
-		assert.ok(error.message.includes("deadline: "), "应包含截至时间");
-		// 持续时间应为人类可读格式（非原始毫秒数）
-		assert.ok(error.message.includes("5.0s") || error.message.includes("5s"), "应包含格式化后的超时时间");
-		// 仍包含 SQL
+		assert.ok(error.message.includes("started at "), "应包含开始时间");
+		assert.ok(error.message.includes("deadline at "), "应包含截至时间");
+		assert.ok(error.message.includes("5s"), "应包含格式化后的超时时间");
 		assert.ok(error.message.includes("SELECT * FROM users"), "应包含 SQL");
 	});
 
 	test("任务已超时时开始时间和截至时间差值等于 timeout", () => {
 		const timeout = 3000;
-		// 模拟一个 5 秒前开始的任务，timeout 为 3s，已超时
-		const startTime = performance.now() - 5000;
-		const task = makeTask({ timeout, sql: "SELECT 1", startTime });
+		const task = makeTask({ timeout, sql: "SELECT 1" });
 		const error = prepareTaskTimeout(task, null);
-		// 从错误消息中提取开始时间和截至时间字符串
-		const startMatch = error.message.match(/start: ([\d\-:.\s]+)/);
-		const deadlineMatch = error.message.match(/deadline: ([\d\-:.\s]+)/);
+		const startMatch = error.message.match(/started at ([^;]+);/);
+		const deadlineMatch = error.message.match(/deadline at ([^;]+);/);
 		assert.ok(startMatch, "错误消息应包含 start 时间");
 		assert.ok(deadlineMatch, "错误消息应包含 deadline 时间");
-		// 格式为 YYYY-MM-DD HH:mm:ss.SSS（本地时间），同一 Node.js 进程解析一致
 		const startMs = new Date(startMatch[1]).getTime();
 		const deadlineMs = new Date(deadlineMatch[1]).getTime();
 		assert.equal(deadlineMs - startMs, timeout, "deadline - start 应等于 timeout 值");
@@ -461,6 +456,7 @@ describe("handleParsedValue", () => {
 
 		// 确保 earlier < before，即 startTime 在调用前确实处于"过去"
 		const before = performance.now();
+		const startedAtBefore = Date.now();
 		assert.ok(before > earlier, "precondition: before > earlier");
 
 		handleParsedValue(`[{"__sqlite_executor_token__":"tok-1"}]`, inflight, {
@@ -471,6 +467,7 @@ describe("handleParsedValue", () => {
 		assert.equal(inflight.count, 1, "t1 应被移出 inflight");
 		assert.ok(t2.startTime >= before, "t2 的 startTime 应被前移到至少当前时刻");
 		assert.ok(t2.startTime > earlier, "t2 的 startTime 应大于旧值（已更新）");
+		assert.ok(t2.startedAt >= startedAtBefore, "t2 的 Unix 开始时间应同步前移");
 	});
 
 	test("isSentinelRow 路径也将下一个 inflight 任务的 startTime 前移", () => {
@@ -481,6 +478,7 @@ describe("handleParsedValue", () => {
 		inflight.push(t1, t2);
 
 		const before = performance.now();
+		const startedAtBefore = Date.now();
 		// isSentinelRaw 因 JSON 含额外空格失败，走 isSentinelRow 回退路径
 		handleParsedValue(`[{"__sqlite_executor_token__" : "tok-fallback"}]`, inflight, {
 			afterSentinel: () => {},
@@ -489,6 +487,7 @@ describe("handleParsedValue", () => {
 
 		assert.equal(inflight.count, 1, "t1 应被移出 inflight");
 		assert.ok(t2.startTime >= before, "isSentinelRow 路径下 t2 的 startTime 也应前移");
+		assert.ok(t2.startedAt >= startedAtBefore, "isSentinelRow 路径下 Unix 开始时间也应前移");
 	});
 
 	test("仅剩一个 inflight 任务时 startTime 不前移（无下一个任务）", () => {
@@ -600,6 +599,7 @@ describe("createPumpQueue", () => {
 		assert.equal(inflight.count, 1, "任务应进入 inflight");
 		assert.equal(inflight.first, task);
 		assert.ok(task.startTime > 0, "应在 pump 时标记 startTime");
+		assert.ok(task.startedAt > 0, "应在 pump 时记录 Unix 开始时间");
 		assert.ok(task.batchId != null, "应分配 batchId");
 	});
 

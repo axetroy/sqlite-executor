@@ -17,8 +17,17 @@ describe("createTimeoutError", () => {
 
 	test("错误消息包含超时时间和 SQL", () => {
 		const err = createTimeoutError(5000, "SELECT * FROM users");
+		assert.ok(err.message.includes("5s"));
 		assert.ok(err.message.includes("5000ms"));
 		assert.ok(err.message.includes("SELECT * FROM users"));
+	});
+
+	test("错误消息包含人类可读的开始时间和截止时间", () => {
+		const startedAt = Date.UTC(2025, 0, 2, 3, 4, 5, 6);
+		const err = createTimeoutError(90_500, "SELECT 1", startedAt);
+		assert.ok(err.message.includes("1m 30s 500ms (90500ms)"));
+		assert.ok(err.message.includes("started at 2025-01-02 03:04:05.006 UTC"));
+		assert.ok(err.message.includes("deadline at 2025-01-02 03:05:35.506 UTC"));
 	});
 
 	test("SQL 原样包含在消息中（由调用方保证已规范化）", () => {
@@ -41,34 +50,19 @@ describe("createTimeoutError", () => {
 		assert.ok(err2.message.includes("SELECT 2"));
 	});
 
-	test("提供 startTime 时包含人类可读的开始时间和截至时间", () => {
+	test("兼容 performance.now() 格式的 startTime", () => {
 		const realStart = performance.now();
 		const err = createTimeoutError(5000, "SELECT 1", realStart);
-		// 应包含 start 和 deadline 时间戳
-		assert.ok(err.message.includes("start: "));
-		assert.ok(err.message.includes("deadline: "));
-		// 应包含格式化后的持续时间（非原始毫秒数）
-		assert.ok(err.message.includes("5.0s") || err.message.includes("5s"));
-		// 仍然包含 SQL
+		assert.ok(err.message.includes("started at "));
+		assert.ok(err.message.includes("deadline at "));
+		assert.ok(err.message.includes("5s"));
 		assert.ok(err.message.includes("SELECT 1"));
 	});
 
-	test("提供 startTime 且任务已超时时时间计算正确", () => {
-		// 模拟 3 秒前开始的任务（timeout=2000ms，已超时）
-		const startTime = performance.now() - 3000;
-		const err = createTimeoutError(2000, "SELECT 1", startTime);
-		// 截至时间应在开始时间之后的 2s
-		assert.ok(err.message.includes("start: "));
-		assert.ok(err.message.includes("deadline: "));
-		assert.ok(err.message.includes("SELECT 1"));
-	});
-
-	test("未提供 startTime 时保持向后兼容格式", () => {
+	test("未提供 startTime 时也包含完整时间信息", () => {
 		const err = createTimeoutError(5000, "SELECT 1");
-		// 不包含 start/deadline 字段
-		assert.ok(!err.message.includes("start: "));
-		assert.ok(!err.message.includes("deadline: "));
-		// 保持旧的简洁格式
+		assert.ok(err.message.includes("started at "));
+		assert.ok(err.message.includes("deadline at "));
 		assert.ok(err.message.includes("5000ms"));
 		assert.ok(err.message.includes("SELECT 1"));
 	});

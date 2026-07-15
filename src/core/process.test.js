@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test, { describe, afterEach } from "node:test";
+import { once } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -150,6 +151,25 @@ describe("ProcessManager", { skip: !sqlite3Ready }, () => {
 		// kill 后清理完成
 		pm.kill();
 		assert.equal(pm.process, null);
+	});
+
+	test("gracefulShutdown 在进程已退出时立即完成", async () => {
+		const pm = createPM();
+		const proc = pm.start();
+		proc.kill();
+		await once(proc, "close");
+
+		let timer;
+		try {
+			await Promise.race([
+				pm.gracefulShutdown(),
+				new Promise((_, reject) => {
+					timer = setTimeout(() => reject(new Error("gracefulShutdown did not finish")), 1000);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
 	});
 
 	test("gracefulShutdown 在有写缓冲时排空再退出", async () => {

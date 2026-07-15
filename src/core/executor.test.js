@@ -1027,7 +1027,12 @@ describe("SQLiteExecutor", () => {
 			try {
 				await assert.rejects(
 					exec.execute("SELECT randomblob(100000000)"),
-					{ message: /timed out after 1ms/ },
+					(error) => {
+						assert.match(error.message, /timed out after 1ms/);
+						assert.match(error.message, /started at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} UTC/);
+						assert.match(error.message, /deadline at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} UTC/);
+						return true;
+					},
 				);
 				assert.equal(exec.metrics.tasksTimeout, 1);
 			} finally {
