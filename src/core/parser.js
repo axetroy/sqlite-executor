@@ -198,7 +198,7 @@ export function createJsonValueParser(onValue) {
  *   1. 跳过空白，等待 [ → 标记 started
  *   2. 跳过空白和逗号，等待元素起始 → 记录 elementStart
  *   3. 扫描元素内容，跟踪 nesting 深度直到归零 → 记录 elementEnd
- *   4. 向前 look-ahead 确认后面是逗号或 ]（即元素完全结束）→ 回调 onRow 并截断已处理部分
+ *   4. 等待逗号或 ] 确认元素完全结束 → 回调 onRow 并截断已处理部分
  *   5. 遇到 ] → 标记 finished，返回剩余数据
  *
  * @param {(rawRow: string) => void} onRow - 每当解析出一个数组元素时被调用，传入元素的原始 JSON 文本
@@ -312,7 +312,46 @@ export function createRowStreamParser(onRow) {
 					continue;
 				}
 
-				// === 阶段 4：在元素内，处理字符串、嵌套结构 ===
+				// === 阶段 4：完整元素等待分隔符 ===
+				if (elementEnd !== -1) {
+					if (isWhitespaceCode(code)) {
+						index++;
+						continue;
+					}
+					if (code === CHAR_COMMA || code === CHAR_CLOSE_BRACKET) {
+						onRow(buffer.slice(elementStart, elementEnd));
+						consumed = index + 1;
+						elementStart = -1;
+						elementEnd = -1;
+						nesting = 0;
+						if (code === CHAR_CLOSE_BRACKET) {
+							this.finished = true;
+							this.buffer = "";
+							this.started = false;
+							this.inString = false;
+							this.escaped = false;
+							this.elementStart = -1;
+							this.elementEnd = -1;
+							this.nesting = 0;
+							this._consumed = 0;
+							this.readPos = 0;
+							return buffer.slice(consumed);
+						}
+						index = consumed;
+						if (consumed > 65536) {
+							buffer = buffer.slice(consumed);
+							this.buffer = buffer;
+							this._consumed = 0;
+							index = 0;
+							consumed = 0;
+						}
+						continue;
+					}
+					index++;
+					continue;
+				}
+
+				// === 阶段 5：在元素内，处理字符串、嵌套结构 ===
 				if (code === CHAR_QUOTE) {
 					inString = true;
 					index++;
@@ -331,52 +370,6 @@ export function createRowStreamParser(onRow) {
 						// 嵌套归零，标记元素结束位置
 						elementEnd = index + 1;
 					}
-				}
-
-				// === 阶段 5：确认元素后面是逗号或 ]，保证元素完整结束 ===
-				if (elementEnd !== -1) {
-					// 向前 look-ahead，跳过元素后的空白
-					let lookAhead = index + 1;
-					while (lookAhead < buffer.length && isWhitespaceCode(buffer.charCodeAt(lookAhead))) {
-						lookAhead++;
-					}
-					if (lookAhead < buffer.length) {
-						const delimiter = buffer.charCodeAt(lookAhead);
-						if (delimiter === CHAR_COMMA || delimiter === CHAR_CLOSE_BRACKET) {
-							// 元素完整，切片出元素文本并回调
-							onRow(buffer.slice(elementStart, elementEnd));
-							// 不直接物理裁剪 buffer，改用 consumed 记录已消费位置
-							consumed = lookAhead + 1;
-							elementStart = -1;
-							elementEnd = -1;
-							nesting = 0;
-							if (delimiter === CHAR_CLOSE_BRACKET) {
-								// 数组结束，从 consumed 处切片剩余数据返回
-								this.finished = true;
-								this.buffer = "";
-								this.started = false;
-								this.inString = false;
-								this.escaped = false;
-								this.elementStart = -1;
-								this.elementEnd = -1;
-								this.nesting = 0;
-								this._consumed = 0;
-								this.readPos = 0;
-								return buffer.slice(consumed);
-							}
-							index = consumed;
-							// 累积消费超过 64KB 时一次物理裁剪，避免 buffer 膨胀和过多 String 分配
-							if (consumed > 65536) {
-								buffer = buffer.slice(consumed);
-								this.buffer = buffer;
-								this._consumed = 0;
-								index = 0;
-								consumed = 0;
-							}
-							continue;
-						}
-					}
-					// look-ahead 没有看到逗号或 ]，说明元素可能被分块截断了，暂不处理
 				}
 
 				index++;

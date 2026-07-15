@@ -208,6 +208,16 @@ describe("createRowStreamParser", () => {
 		assert.equal(rows[1], '{"id":2}');
 	});
 
+	test("元素结束与分隔符跨分块时逐行解析", () => {
+		const rows = [];
+		const parser = createRowStreamParser((raw) => rows.push(raw));
+		parser.feed('[{"id":1}');
+		parser.feed(',{"id":2}');
+		const leftover = parser.feed('] trailing');
+		assert.deepEqual(rows, ['{"id":1}', '{"id":2}']);
+		assert.equal(leftover, " trailing");
+	});
+
 	test("空数组触发 finished", () => {
 		const rows = [];
 		const parser = createRowStreamParser((raw) => rows.push(raw));
