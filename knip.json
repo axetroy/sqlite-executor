@@ -1,9 +1,14 @@
 {
 	"$schema": "https://unpkg.com/knip@5/schema.json",
 	"entry": [
-		"index.{js,ts,tsx}",
 		"script/download-sqlite3.js",
 		"src/index.{js,ts,tsx}"
 	],
-	"ignore": ["rslib.config.js", "fixtures/**/*.(c|m)?js", "benchmark/**/*.(c|m)?js"]
+	"ignore": [
+		"rslib.config.js",
+		"fixtures/**/*.(c|m)?js",
+		"benchmark/**/*.(c|m)?js"
+	],
+	"ignoreDependencies": ["c8"],
+	"ignoreBinaries": ["c8"]
 }
