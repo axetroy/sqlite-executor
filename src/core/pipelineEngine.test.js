@@ -1340,6 +1340,23 @@ describe("PipelineEngine", () => {
 			disarm(task);
 		});
 
+		test("零行 query 的 stderr 晚于首轮 finalize 时仍会 reject", async () => {
+			const { task, promise } = createTask({
+				kind: "query",
+				token: "late-query-stderr",
+			});
+			engine.enqueue(task);
+
+			engine.handleStdoutChunk(`[{"${TOKEN_COLUMN}":"late-query-stderr"}]`);
+			await flush();
+
+			assert.equal(task.settled, false);
+			engine.handleStderrChunk("no such table: missing");
+
+			await assert.rejects(promise, /no such table/);
+			disarm(task);
+		});
+
 		test("无 inflight 任务时不崩溃", () => {
 			engine.handleStderrChunk("orphan error message");
 			// 不应抛出异常

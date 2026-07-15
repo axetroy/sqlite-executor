@@ -108,8 +108,8 @@ export function createSweeper({ inflight, sweepIntervalMs, handleTaskTimeout }) 
 
 /**
  * 创建 pendingFinalize 结算调度器。
- * 通过 setImmediate 延迟一帧执行 finalizePendingTasks，给 stderr chunk 到达的时间窗口。
- * 若 finalizePendingTasks 中有零行 query 等待 stderr，自动重新调度下一轮 finalize。
+ * 通过 setImmediate 延迟执行 finalizePendingTasks，给 stderr chunk 到达的时间窗口。
+ * 无错误信息的零行 query 会额外等待一轮，避免 stdout sentinel 先于 stderr 到达时误报成功。
  *
  * @param {{
  *   pendingFinalizeTasks: Set<object>,
@@ -124,6 +124,7 @@ export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: sett
 	let scheduled = false;
 	let immediate = null;
 	let cancelled = false;
+	const delayedZeroRowQueries = new WeakSet();
 	const cancel = () => {
 		cancelled = true;
 		if (immediate) {
@@ -139,8 +140,32 @@ export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: sett
 		immediate = setImmediate(() => {
 			immediate = null;
 			if (cancelled) return;
+
+			const delayedTasks = [];
+			if (!pendingStderr?.length) {
+				for (const task of pendingFinalizeTasks) {
+					if (
+						task.kind === "query"
+						&& task.rows.length === 0
+						&& !task.stderrText
+						&& !task.consumerError
+						&& !delayedZeroRowQueries.has(task)
+					) {
+						delayedZeroRowQueries.add(task);
+						delayedTasks.push(task);
+					}
+				}
+				for (const task of delayedTasks) {
+					pendingFinalizeTasks.delete(task);
+				}
+			}
+
 			finalizePendingTasks(pendingFinalizeTasks, settle, pumpQueue, pendingStderr, inflight);
+			for (const task of delayedTasks) {
+				pendingFinalizeTasks.add(task);
+			}
 			scheduled = false;
+			if (delayedTasks.length > 0) check();
 		});
 	};
 	check.cancel = cancel;
