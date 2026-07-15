@@ -797,14 +797,17 @@ describe("SQLiteExecutor", () => {
 		});
 
 		test("随机超时：短超时 + 慢查询不阻塞正常操作", async () => {
-			// 先用默认超时建表（防止 CI 环境 sqlite3 进程启动 + 建表超过 100ms 导致误超时）
-			await sqlite.execute("CREATE TABLE IF NOT EXISTS random_timeout (id INTEGER PRIMARY KEY, val TEXT)");
-
 			const timeoutSqlite = new SQLiteExecutor({
 				binary: SQLite3BinaryFile,
 				statementTimeout: 500, // 500ms——足够正常查询完成, 但 moderate blob 可能超时
 			});
 			try {
+				await timeoutSqlite.execute(
+					"CREATE TABLE IF NOT EXISTS random_timeout (id INTEGER PRIMARY KEY, val TEXT)",
+					[],
+					{ timeout: 30000 },
+				);
+
 				// 并行发送多个 moderate randomblob 查询（可能超时）+ 正常操作，验证隔离性
 				const slowOps = [];
 				for (let i = 0; i < 8; i++) {
@@ -824,28 +827,21 @@ describe("SQLiteExecutor", () => {
 
 				// 正常操作应在超时环境下正常完成（验证隔离）
 				const normalResults = results.slice(slowOps.length);
-				const ok = normalResults.every((r) => r.status === "fulfilled");
+				assert.ok(
+					normalResults.every((result) => result.status === "fulfilled"),
+					`正常操作不应因前置慢查询超时: ${normalResults.map((result) => result.status).join(", ")}`,
+				);
 
-				// 用正常超时的 executor 验证数据（避免短超时下查询也超时）
-				const verifySqlite = new SQLiteExecutor({ binary: SQLite3BinaryFile });
-				try {
-					if (ok) {
-						// 正常操作全部成功——验证数据完整性
-						const rows = await verifySqlite.query("SELECT val FROM random_timeout ORDER BY id ASC");
-						assert.ok(rows.length >= 2, "正常 INSERT 应写入数据");
-					} else {
-						// 在某些慢 CI 环境中正常操作也可能超时（但不代表隔离失败）
-						// 打印诊断信息后通过测试，不做强制失败
-						console.log("注意: 正常操作中有超时, 可能因 CI 负载过高导致");
-						console.log("正常操作状态:", normalResults.map((r) => r.status).join(", "));
-					}
+				const rows = await timeoutSqlite.query(
+					"SELECT val FROM random_timeout ORDER BY id ASC",
+					[],
+					{ timeout: 30000 },
+				);
+				assert.ok(rows.length >= 2, "正常 INSERT 应写入数据");
 
-					// 慢查询检查（非强制——某些环境下 randomblob 可能比想象中快）
-					const slowTimeoutCount = results.slice(0, slowOps.length).filter((r) => r.status === "rejected").length;
-					console.log(`慢查询中超时数: ${slowTimeoutCount}/${slowOps.length}`);
-				} finally {
-					await verifySqlite.close();
-				}
+				// 慢查询检查（非强制——某些环境下 randomblob 可能比想象中快）
+				const slowTimeoutCount = results.slice(0, slowOps.length).filter((r) => r.status === "rejected").length;
+				console.log(`慢查询中超时数: ${slowTimeoutCount}/${slowOps.length}`);
 			} finally {
 				await timeoutSqlite.close();
 			}
@@ -1035,6 +1031,35 @@ describe("SQLiteExecutor", () => {
 					},
 				);
 				assert.equal(exec.metrics.tasksTimeout, 1);
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("大量前置工作不会消耗后续短 SQL 的执行超时", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 10000,
+			});
+			try {
+				const slowSql = `
+					WITH RECURSIVE counter(value) AS (
+						VALUES(0)
+						UNION ALL
+						SELECT value + 1 FROM counter WHERE value < 5000000
+					)
+					SELECT sum(value) AS total FROM counter
+				`;
+				const [slowResult, fastResult] = await Promise.allSettled([
+					exec.query(slowSql),
+					exec.query("SELECT 1 AS value", [], { timeout: 100 }),
+				]);
+
+				assert.equal(slowResult.status, "fulfilled");
+				assert.deepEqual(fastResult, {
+					status: "fulfilled",
+					value: [{ value: 1 }],
+				});
 			} finally {
 				await exec.close();
 			}
