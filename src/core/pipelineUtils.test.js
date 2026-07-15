@@ -143,6 +143,40 @@ describe("prepareTaskTimeout", () => {
 		const result = prepareTaskTimeout(task, undefined);
 		assert.ok(result instanceof Error);
 	});
+
+	test("错误消息包含人类可读的开始时间和截至时间（当 task 有 startTime 时）", () => {
+		const task = makeTask({
+			timeout: 5000,
+			sql: "SELECT * FROM users",
+			startTime: performance.now(),
+		});
+		const error = prepareTaskTimeout(task, null);
+		assert.ok(error instanceof Error);
+		// 应包含人类可读的时间标记
+		assert.ok(error.message.includes("start: "), "应包含开始时间");
+		assert.ok(error.message.includes("deadline: "), "应包含截至时间");
+		// 持续时间应为人类可读格式（非原始毫秒数）
+		assert.ok(error.message.includes("5.0s") || error.message.includes("5s"), "应包含格式化后的超时时间");
+		// 仍包含 SQL
+		assert.ok(error.message.includes("SELECT * FROM users"), "应包含 SQL");
+	});
+
+	test("任务已超时时开始时间和截至时间差值等于 timeout", () => {
+		const timeout = 3000;
+		// 模拟一个 5 秒前开始的任务，timeout 为 3s，已超时
+		const startTime = performance.now() - 5000;
+		const task = makeTask({ timeout, sql: "SELECT 1", startTime });
+		const error = prepareTaskTimeout(task, null);
+		// 从错误消息中提取开始时间和截至时间字符串
+		const startMatch = error.message.match(/start: ([\d\-:.\s]+)/);
+		const deadlineMatch = error.message.match(/deadline: ([\d\-:.\s]+)/);
+		assert.ok(startMatch, "错误消息应包含 start 时间");
+		assert.ok(deadlineMatch, "错误消息应包含 deadline 时间");
+		// 格式为 YYYY-MM-DD HH:mm:ss.SSS（本地时间），同一 Node.js 进程解析一致
+		const startMs = new Date(startMatch[1]).getTime();
+		const deadlineMs = new Date(deadlineMatch[1]).getTime();
+		assert.equal(deadlineMs - startMs, timeout, "deadline - start 应等于 timeout 值");
+	});
 });
 
 describe("createSweeper", () => {

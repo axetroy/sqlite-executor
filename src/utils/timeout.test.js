@@ -40,4 +40,36 @@ describe("createTimeoutError", () => {
 		assert.ok(err2.message.includes("2000ms"));
 		assert.ok(err2.message.includes("SELECT 2"));
 	});
+
+	test("提供 startTime 时包含人类可读的开始时间和截至时间", () => {
+		const realStart = performance.now();
+		const err = createTimeoutError(5000, "SELECT 1", realStart);
+		// 应包含 start 和 deadline 时间戳
+		assert.ok(err.message.includes("start: "));
+		assert.ok(err.message.includes("deadline: "));
+		// 应包含格式化后的持续时间（非原始毫秒数）
+		assert.ok(err.message.includes("5.0s") || err.message.includes("5s"));
+		// 仍然包含 SQL
+		assert.ok(err.message.includes("SELECT 1"));
+	});
+
+	test("提供 startTime 且任务已超时时时间计算正确", () => {
+		// 模拟 3 秒前开始的任务（timeout=2000ms，已超时）
+		const startTime = performance.now() - 3000;
+		const err = createTimeoutError(2000, "SELECT 1", startTime);
+		// 截至时间应在开始时间之后的 2s
+		assert.ok(err.message.includes("start: "));
+		assert.ok(err.message.includes("deadline: "));
+		assert.ok(err.message.includes("SELECT 1"));
+	});
+
+	test("未提供 startTime 时保持向后兼容格式", () => {
+		const err = createTimeoutError(5000, "SELECT 1");
+		// 不包含 start/deadline 字段
+		assert.ok(!err.message.includes("start: "));
+		assert.ok(!err.message.includes("deadline: "));
+		// 保持旧的简洁格式
+		assert.ok(err.message.includes("5000ms"));
+		assert.ok(err.message.includes("SELECT 1"));
+	});
 });

@@ -67,7 +67,7 @@ export function prepareTaskTimeout(task, metrics) {
 	if (task.settled) return null;
 	task.timedout = true;
 	metrics?.incrementTasksTimeout();
-	return createTimeoutError(task.timeout, task.sql);
+	return createTimeoutError(task.timeout, task.sql, task.startTime);
 }
 
 /**
