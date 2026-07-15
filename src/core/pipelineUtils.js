@@ -142,7 +142,10 @@ export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: sett
 			if (cancelled) return;
 
 			const delayedTasks = [];
-			if (!pendingStderr?.length) {
+			const hasQueryRows = Array.from(pendingFinalizeTasks).some(
+				(task) => task.kind === "query" && task.rows.length > 0,
+			);
+			if (!pendingStderr?.length && hasQueryRows) {
 				for (const task of pendingFinalizeTasks) {
 					if (
 						task.kind === "query"
