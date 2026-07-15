@@ -6,19 +6,25 @@ export const DEFAULT_STATEMENT_TIMEOUT = 30_000;
  * 消息包含人类可读的超时时长、开始时间和截止时间。
  * @param {number} timeout - 超时毫秒数
  * @param {string} sql - 超时的 SQL 语句（已标准化）
- * @param {number} [startedAt] - 任务开始时的 Unix 毫秒时间戳
+ * @param {number} [startTime] - 任务开始时的 Unix 毫秒时间戳或 performance.now() 值
  * @returns {Error}
  */
-export function createTimeoutError(timeout, sql, startedAt) {
-	const startTime = Number.isFinite(startedAt) ? startedAt : Date.now() - timeout;
-	const deadline = startTime + timeout;
+export function createTimeoutError(timeout, sql, startTime) {
+	const startedAt = resolveStartTimestamp(startTime, timeout);
+	const deadline = startedAt + timeout;
 	const duration = formatDuration(timeout);
 	const rawDuration = duration === `${timeout}ms` ? "" : ` (${timeout}ms)`;
 	return new Error(
 		`SQLite statement timed out after ${duration}${rawDuration}; `
-		+ `started at ${formatTimestamp(startTime)}; `
+		+ `started at ${formatTimestamp(startedAt)}; `
 		+ `deadline at ${formatTimestamp(deadline)}; SQL: ${sql}`,
 	);
+}
+
+function resolveStartTimestamp(startTime, timeout) {
+	if (!Number.isFinite(startTime)) return Date.now() - timeout;
+	if (startTime >= 1_000_000_000_000) return startTime;
+	return Date.now() - Math.max(0, performance.now() - startTime);
 }
 
 function formatDuration(milliseconds) {

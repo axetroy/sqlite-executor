@@ -49,4 +49,21 @@ describe("createTimeoutError", () => {
 		assert.ok(err2.message.includes("2000ms"));
 		assert.ok(err2.message.includes("SELECT 2"));
 	});
+
+	test("兼容 performance.now() 格式的 startTime", () => {
+		const realStart = performance.now();
+		const err = createTimeoutError(5000, "SELECT 1", realStart);
+		assert.ok(err.message.includes("started at "));
+		assert.ok(err.message.includes("deadline at "));
+		assert.ok(err.message.includes("5s"));
+		assert.ok(err.message.includes("SELECT 1"));
+	});
+
+	test("未提供 startTime 时也包含完整时间信息", () => {
+		const err = createTimeoutError(5000, "SELECT 1");
+		assert.ok(err.message.includes("started at "));
+		assert.ok(err.message.includes("deadline at "));
+		assert.ok(err.message.includes("5000ms"));
+		assert.ok(err.message.includes("SELECT 1"));
+	});
 });

@@ -146,6 +146,32 @@ describe("prepareTaskTimeout", () => {
 		const result = prepareTaskTimeout(task, undefined);
 		assert.ok(result instanceof Error);
 	});
+
+	test("错误消息包含人类可读的开始时间和截至时间", () => {
+		const task = makeTask({
+			timeout: 5000,
+			sql: "SELECT * FROM users",
+		});
+		const error = prepareTaskTimeout(task, null);
+		assert.ok(error instanceof Error);
+		assert.ok(error.message.includes("started at "), "应包含开始时间");
+		assert.ok(error.message.includes("deadline at "), "应包含截至时间");
+		assert.ok(error.message.includes("5s"), "应包含格式化后的超时时间");
+		assert.ok(error.message.includes("SELECT * FROM users"), "应包含 SQL");
+	});
+
+	test("任务已超时时开始时间和截至时间差值等于 timeout", () => {
+		const timeout = 3000;
+		const task = makeTask({ timeout, sql: "SELECT 1" });
+		const error = prepareTaskTimeout(task, null);
+		const startMatch = error.message.match(/started at ([^;]+);/);
+		const deadlineMatch = error.message.match(/deadline at ([^;]+);/);
+		assert.ok(startMatch, "错误消息应包含 start 时间");
+		assert.ok(deadlineMatch, "错误消息应包含 deadline 时间");
+		const startMs = new Date(startMatch[1]).getTime();
+		const deadlineMs = new Date(deadlineMatch[1]).getTime();
+		assert.equal(deadlineMs - startMs, timeout, "deadline - start 应等于 timeout 值");
+	});
 });
 
 describe("createSweeper", () => {
