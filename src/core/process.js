@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { which } from "../which.js";
@@ -185,6 +184,7 @@ export class ProcessManager {
 	async gracefulShutdown() {
 		const proc = this.#proc;
 		if (!proc) return;
+		if (proc.exitCode !== null || proc.signalCode !== null) return;
 
 		// 等待当前缓冲数据（由 drain 期间堆积的 write() 调用产生）全部写入 pipe
 		if (this.#draining || this.#writeBuffer.length > 0) {
@@ -197,18 +197,46 @@ export class ProcessManager {
 			});
 		}
 
-		const timer = setTimeout(() => {
-			proc.kill();
-		}, GRACEFUL_SHUTDOWN_TIMEOUT).unref();
+		if (proc.exitCode !== null || proc.signalCode !== null) return;
 
-		try {
-			proc.stdin?.write(".quit\n");
-			await once(proc, "close");
-		} catch {
-			// 进程可能已被清理，忽略
-		} finally {
-			clearTimeout(timer);
-		}
+		await new Promise((resolve) => {
+			let settled = false;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				proc.off("close", finish);
+				proc.off("error", finish);
+				resolve();
+			};
+			const forceClose = () => {
+				try {
+					proc.kill();
+				} catch {}
+				finish();
+			};
+			const timer = setTimeout(forceClose, GRACEFUL_SHUTDOWN_TIMEOUT);
+
+			proc.once("close", finish);
+			proc.once("error", finish);
+
+			if (proc.exitCode !== null || proc.signalCode !== null) {
+				finish();
+				return;
+			}
+
+			try {
+				if (!proc.stdin) {
+					forceClose();
+					return;
+				}
+				proc.stdin.write(".quit\n", (error) => {
+					if (error) forceClose();
+				});
+			} catch {
+				forceClose();
+			}
+		});
 	}
 
 	/**
