@@ -813,7 +813,7 @@ describe("handleStderrChunk", () => {
 		const inflight = new InflightTracker();
 		const pendingStderr = /** @type {string[]} */([]);
 		const logger = { errorCalls: /** @type {string[]} */([]), error(msg) { this.errorCalls.push(msg); } };
-		return { inflight, pendingFinalizeTasks, pendingStderr, logger };
+		return { inflight, pendingFinalizeTasks, pendingStderr, logger, zeroRowQueryFinalizedCount: 0 };
 	}
 
 	test("无匹配任务时通过 logger 输出", () => {
@@ -886,7 +886,7 @@ describe("handleStderrChunk", () => {
 		// ── 设定场景 ──
 		// 1. pendingFinalizeTasks 已清空 —— 上一批非法查询任务已结算，没有零行匹配
 		// 2. 唯一一个 inflight 任务是后续的新查询（模拟验证查询），rows 尚未到达
-		// 3. hasFinalizedZeroRowQuery=true 模拟上一批零行查询已结算的状态，
+		// 3. zeroRowQueryFinalizedCount=1 模拟上一批零行查询已结算的状态，
 		//    通知 handleStderrChunk 当前 stderr 可能是延迟到达的残余错误
 		const inflightTask = {
 			kind: "query",
@@ -896,7 +896,7 @@ describe("handleStderrChunk", () => {
 			walBatch: false,
 		};
 		ctx.inflight.push(inflightTask);
-		ctx.hasFinalizedZeroRowQuery = true;
+		ctx.zeroRowQueryFinalizedCount = 1;
 
 		// ── 触发：延迟 stderr 到达 ──
 		handleStderrChunk("Parse error near line 1: no such column: FORM\n  SELECT FORM foo;\n", ctx);

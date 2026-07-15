@@ -43,6 +43,9 @@ export class PipelineEngine {
 	 */
 	#hasFinalizedZeroRowQuery = false;
 
+	/** 已结算但可能仍有延迟 stderr 在途的零行 query 数量，用于在归因后重置 #hasFinalizedZeroRowQuery */
+	#zeroRowQueryCount = { value: 0 };
+
 	/**
 	 * @param {import("./process.js").ProcessManager} processManager
 	 * @param {{
@@ -93,12 +96,20 @@ export class PipelineEngine {
 			batchSize: this.#batchSize,
 			maxInflight: this.#maxInflight,
 		});
+		// 使用对象引用传递计数器，以便 createFinalizeScheduler 可以修改其值
 		this.#scheduleFinalizeCheck = createFinalizeScheduler({
 			pendingFinalizeTasks: this.#pendingFinalizeTasks,
 			settleTask: (t, e, v) => this.#settleTask(t, e, v),
 			pumpQueue: () => this.#pumpQueue(),
 			pendingStderr: this.#pendingStderr,
 			inflight: this.#inflight,
+			zeroRowQueryCount: this.#zeroRowQueryCount,
+			onZeroRowQueryProcessed: () => {
+				// 当所有已结算零行 query 的延迟 stderr 都被归因后，重置标志
+				if (this.#zeroRowQueryCount.value === 0) {
+					this.#hasFinalizedZeroRowQuery = false;
+				}
+			},
 		});
 		this.#sharedValueParser = createJsonValueParser((raw) => {
 			handleParsedValue(raw, this.#inflight, {
@@ -211,7 +222,7 @@ export class PipelineEngine {
 			pendingFinalizeTasks: this.#pendingFinalizeTasks,
 			logger: this.#logger,
 			pendingStderr: this.#pendingStderr,
-			hasFinalizedZeroRowQuery: this.#hasFinalizedZeroRowQuery,
+			zeroRowQueryFinalizedCount: this.#zeroRowQueryCount.value,
 		});
 	}
 
@@ -223,8 +234,10 @@ export class PipelineEngine {
 		// 两种情况下，后续到达的延迟 stderr 都不应归因给新的 inflight query，
 		// 故标记 #hasFinalizedZeroRowQuery 提醒 handleStderrChunk 将其缓冲到
 		// pendingStderr，交由零行归因机制兜底。
+		// 使用计数器追踪已结算的零行 query 数量，归因后递减，归零时重置标志。
 		if (task.kind === "query" && task.rows?.length === 0) {
 			this.#hasFinalizedZeroRowQuery = true;
+			this.#zeroRowQueryCount.value++;
 		}
 		settleTask(task, error, value, this.#metrics, { resetRowParser: true });
 	}

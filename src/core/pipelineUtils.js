@@ -14,9 +14,15 @@ import { createTimeoutError } from "../utils/timeout.js";
  * @param {(task: object, error: Error | null, value: any) => void} settle
  * @param {() => void} pumpQueue
  * @param {string[]} [pendingStderr] - 待处理的 stderr 缓冲
+ * @param {import("./inflightTracker.js").InflightTracker} [inflight]
+ * @param {{ value: number }} [zeroRowQueryCount] - 已结算零行 query 计数器（引用），归因后递减
+ * @returns {{ zeroRowQueryProcessed: number, pendingStderrEmptied: boolean }}
  */
-export function finalizePendingTasks(tasks, settle, pumpQueue, pendingStderr, inflight) {
+export function finalizePendingTasks(tasks, settle, pumpQueue, pendingStderr, inflight, zeroRowQueryCount) {
 	const hasStderrBuffer = pendingStderr && pendingStderr.length > 0;
+	let zeroRowQueryProcessed = 0;
+	let pendingStderrEmptied = false;
+
 	// 排空 pendingStderr 缓冲，尝试零行归因
 	if (hasStderrBuffer) {
 		for (const chunk of pendingStderr) {
@@ -24,12 +30,14 @@ export function finalizePendingTasks(tasks, settle, pumpQueue, pendingStderr, in
 				// 归因给所有零行 query 任务（可能有多个失败 SQL 在同一 batch）
 				if (t.kind === "query" && t.rows.length === 0) {
 					t.stderrText += chunk;
+					zeroRowQueryProcessed++;
 				}
 			}
 		}
 		// 仅当无更多 inflight 任务时才清除缓冲（否则保留以供后续零行任务使用）
 		if (!inflight || inflight.count === 0) {
 			pendingStderr.length = 0;
+			pendingStderrEmptied = true;
 		}
 	}
 
@@ -54,6 +62,8 @@ export function finalizePendingTasks(tasks, settle, pumpQueue, pendingStderr, in
 
 	tasks.clear();
 	pumpQueue();
+
+	return { zeroRowQueryProcessed, pendingStderrEmptied };
 }
 
 /**
@@ -117,10 +127,12 @@ export function createSweeper({ inflight, sweepIntervalMs, handleTaskTimeout }) 
  *   pumpQueue: () => void,
  *   pendingStderr?: string[],
  *   inflight?: import("./inflightTracker.js").InflightTracker,
+ *   zeroRowQueryCount?: { value: number },
+ *   onZeroRowQueryProcessed?: (count: number) => void,
  * }} params
  * @returns {() => void}
  */
-export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: settle, pumpQueue, pendingStderr, inflight }) {
+export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: settle, pumpQueue, pendingStderr, inflight, zeroRowQueryCount, onZeroRowQueryProcessed }) {
 	let scheduled = false;
 	let immediate = null;
 	let cancelled = false;
@@ -163,11 +175,18 @@ export function createFinalizeScheduler({ pendingFinalizeTasks, settleTask: sett
 				}
 			}
 
-			finalizePendingTasks(pendingFinalizeTasks, settle, pumpQueue, pendingStderr, inflight);
+			const result = finalizePendingTasks(pendingFinalizeTasks, settle, pumpQueue, pendingStderr, inflight, zeroRowQueryCount);
 			for (const task of delayedTasks) {
 				pendingFinalizeTasks.add(task);
 			}
 			scheduled = false;
+
+			// 递减已结算零行 query 计数器，归因后归零时重置标志
+			if (zeroRowQueryCount && result.zeroRowQueryProcessed > 0) {
+				zeroRowQueryCount.value -= result.zeroRowQueryProcessed;
+				onZeroRowQueryProcessed?.(result.zeroRowQueryProcessed);
+			}
+
 			if (delayedTasks.length > 0) check();
 		});
 	};
@@ -357,10 +376,10 @@ export function handleSentinelTask(task, { settleTask, pendingFinalizeTasks, sch
  *   pendingFinalizeTasks: Set<object>,
  *   logger?: { error?: (msg: string) => void },
  *   pendingStderr?: string[],
- *   hasFinalizedZeroRowQuery?: boolean,
+ *   zeroRowQueryFinalizedCount?: number,
  * }} params
  */
-export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logger, pendingStderr, hasFinalizedZeroRowQuery }) {
+export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logger, pendingStderr, zeroRowQueryFinalizedCount = 0 }) {
 	const inflightFirst = inflight.first;
 	const firstPending = pendingFinalizeTasks.values().next().value;
 
@@ -427,10 +446,10 @@ export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logge
 				// inflight 任务已有数据行：它是合法查询，stderr 不来自它。
 				logger?.error?.(chunk.trim());
 			} else if (task.kind === "query" && task.rows.length === 0) {
-				// inflight query 尚无数据行 —— 根据标志位判断 stderr 来源：
-				// hasFinalizedZeroRowQuery=true  → 来自已结算的上一批任务（延迟 stderr #1957）
-				// hasFinalizedZeroRowQuery=false → 来自当前 inflight 任务（即时归因）
-				if (hasFinalizedZeroRowQuery) {
+				// inflight query 尚无数据行 —— 根据计数器判断 stderr 来源：
+				// zeroRowQueryFinalizedCount > 0 → 来自已结算的上一批任务（延迟 stderr #1957）
+				// zeroRowQueryFinalizedCount = 0 → 来自当前 inflight 任务（即时归因）
+				if (zeroRowQueryFinalizedCount > 0) {
 					pendingStderr?.push(chunk);
 				} else {
 					task.stderrText += chunk;
@@ -444,10 +463,10 @@ export function handleStderrChunk(chunk, { inflight, pendingFinalizeTasks, logge
 			// 唯一的 inflight 任务已有数据行：它是合法查询，stderr 不来自它。
 			logger?.error?.(chunk.trim());
 		} else if (task.kind === "query" && task.rows.length === 0) {
-			// 唯一的 inflight query 尚无数据行 —— 根据标志位判断：
-			// hasFinalizedZeroRowQuery=true  → 来自已结算的上一批任务（延迟 stderr #1957）
-			// hasFinalizedZeroRowQuery=false → 来自当前 inflight 任务（即时归因）
-			if (hasFinalizedZeroRowQuery) {
+			// 唯一的 inflight query 尚无数据行 —— 根据计数器判断：
+			// zeroRowQueryFinalizedCount > 0 → 来自已结算的上一批任务（延迟 stderr #1957）
+			// zeroRowQueryFinalizedCount = 0 → 来自当前 inflight 任务（即时归因）
+			if (zeroRowQueryFinalizedCount > 0) {
 				pendingStderr?.push(chunk);
 			} else {
 				task.stderrText += chunk;
