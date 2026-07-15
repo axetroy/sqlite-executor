@@ -17,8 +17,17 @@ describe("createTimeoutError", () => {
 
 	test("错误消息包含超时时间和 SQL", () => {
 		const err = createTimeoutError(5000, "SELECT * FROM users");
+		assert.ok(err.message.includes("5s"));
 		assert.ok(err.message.includes("5000ms"));
 		assert.ok(err.message.includes("SELECT * FROM users"));
+	});
+
+	test("错误消息包含人类可读的开始时间和截止时间", () => {
+		const startedAt = Date.UTC(2025, 0, 2, 3, 4, 5, 6);
+		const err = createTimeoutError(90_500, "SELECT 1", startedAt);
+		assert.ok(err.message.includes("1m 30s 500ms (90500ms)"));
+		assert.ok(err.message.includes("started at 2025-01-02 03:04:05.006 UTC"));
+		assert.ok(err.message.includes("deadline at 2025-01-02 03:05:35.506 UTC"));
 	});
 
 	test("SQL 原样包含在消息中（由调用方保证已规范化）", () => {

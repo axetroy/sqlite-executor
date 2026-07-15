@@ -67,7 +67,7 @@ export function prepareTaskTimeout(task, metrics) {
 	if (task.settled) return null;
 	task.timedout = true;
 	metrics?.incrementTasksTimeout();
-	return createTimeoutError(task.timeout, task.sql);
+	return createTimeoutError(task.timeout, task.sql, task.startedAt);
 }
 
 /**
@@ -203,6 +203,7 @@ function advanceNextInflightStartTime(inflight) {
 		const now = performance.now();
 		if (now > next.startTime) {
 			next.startTime = now;
+			next.startedAt = Date.now();
 		}
 	}
 }
@@ -284,12 +285,14 @@ export function createPumpQueue({ queue, inflight, processManager, sweeper, batc
 		if (batch.length === 0) return;
 
 		const now = performance.now();
+		const startedAt = Date.now();
 		const payload = buildBatchPayload(batch);
 		const batchId = nextBatchId++;
 		const useWalBatch = payload.startsWith("BEGIN;");
 
 		for (const task of batch) {
 			task.startTime = now;
+			task.startedAt = startedAt;
 			task.batchId = batchId;
 			task.walBatch = useWalBatch;
 		}

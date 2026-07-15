@@ -125,6 +125,7 @@ export class TaskWorker {
 			stderrText: "",
 			settled: false,
 			startTime: 0,
+			startedAt: 0,
 		};
 		this.#metrics?.incrementTasksTotal(config.kind);
 		this.#pendingQueue.enqueue(task);

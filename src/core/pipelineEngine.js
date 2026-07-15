@@ -151,7 +151,7 @@ export class PipelineEngine {
 	/**
 	 * 入队一个任务。
 	 * 任务对象应包含：kind, sql, timeout, token, onRow, rows, resolve, reject,
-	 * consumerError, stderrText, timer, startTime, rowParser。
+	 * consumerError, stderrText, timer, startTime, startedAt, rowParser。
 	 * @param {object} task
 	 */
 	enqueue(task) {

@@ -102,6 +102,7 @@ describe("prepareTaskTimeout", () => {
 			timer: null,
 			timeout: 100,
 			sql: "SELECT 1",
+			startedAt: Date.UTC(2025, 0, 2, 3, 4, 5),
 			...overrides,
 		};
 	}
@@ -111,6 +112,8 @@ describe("prepareTaskTimeout", () => {
 		const error = prepareTaskTimeout(task, null);
 		assert.ok(error instanceof Error);
 		assert.ok(error.message.includes("timed out"));
+		assert.ok(error.message.includes("started at 2025-01-02 03:04:05.000 UTC"));
+		assert.ok(error.message.includes("deadline at 2025-01-02 03:04:05.100 UTC"));
 		assert.equal(task.timedout, true);
 	});
 
@@ -427,6 +430,7 @@ describe("handleParsedValue", () => {
 
 		// 确保 earlier < before，即 startTime 在调用前确实处于"过去"
 		const before = performance.now();
+		const startedAtBefore = Date.now();
 		assert.ok(before > earlier, "precondition: before > earlier");
 
 		handleParsedValue(`[{"__sqlite_executor_token__":"tok-1"}]`, inflight, {
@@ -437,6 +441,7 @@ describe("handleParsedValue", () => {
 		assert.equal(inflight.count, 1, "t1 应被移出 inflight");
 		assert.ok(t2.startTime >= before, "t2 的 startTime 应被前移到至少当前时刻");
 		assert.ok(t2.startTime > earlier, "t2 的 startTime 应大于旧值（已更新）");
+		assert.ok(t2.startedAt >= startedAtBefore, "t2 的 Unix 开始时间应同步前移");
 	});
 
 	test("isSentinelRow 路径也将下一个 inflight 任务的 startTime 前移", () => {
@@ -447,6 +452,7 @@ describe("handleParsedValue", () => {
 		inflight.push(t1, t2);
 
 		const before = performance.now();
+		const startedAtBefore = Date.now();
 		// isSentinelRaw 因 JSON 含额外空格失败，走 isSentinelRow 回退路径
 		handleParsedValue(`[{"__sqlite_executor_token__" : "tok-fallback"}]`, inflight, {
 			afterSentinel: () => {},
@@ -455,6 +461,7 @@ describe("handleParsedValue", () => {
 
 		assert.equal(inflight.count, 1, "t1 应被移出 inflight");
 		assert.ok(t2.startTime >= before, "isSentinelRow 路径下 t2 的 startTime 也应前移");
+		assert.ok(t2.startedAt >= startedAtBefore, "isSentinelRow 路径下 Unix 开始时间也应前移");
 	});
 
 	test("仅剩一个 inflight 任务时 startTime 不前移（无下一个任务）", () => {
@@ -566,6 +573,7 @@ describe("createPumpQueue", () => {
 		assert.equal(inflight.count, 1, "任务应进入 inflight");
 		assert.equal(inflight.first, task);
 		assert.ok(task.startTime > 0, "应在 pump 时标记 startTime");
+		assert.ok(task.startedAt > 0, "应在 pump 时记录 Unix 开始时间");
 		assert.ok(task.batchId != null, "应分配 batchId");
 	});
 
