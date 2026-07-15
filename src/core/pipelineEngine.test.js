@@ -1362,6 +1362,7 @@ describe("PipelineEngine", () => {
 			engine.handleStderrChunk("no such table: missing");
 
 			await assert.rejects(promise, /no such table/);
+			assert.equal(engine.pendingStatements, 0);
 			disarm(validTask);
 			disarm(task);
 		});
