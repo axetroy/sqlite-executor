@@ -270,6 +270,27 @@ describe("createSweeper", () => {
 
 		assert.equal(timedoutTasks.length, 0, "未超时任务不应被触发");
 	});
+
+	test("首任务执行期间不检查后续排队任务的超时", async () => {
+		const inflight = new InflightTracker();
+		const timedoutTasks = [];
+		const startTime = performance.now() - 50;
+		const runningTask = { startTime, timeout: 10000 };
+		const queuedTask = { startTime, timeout: 1 };
+		inflight.push(runningTask, queuedTask);
+
+		const sweeper = createSweeper({
+			inflight,
+			sweepIntervalMs: 10,
+			handleTaskTimeout: (task) => timedoutTasks.push(task),
+		});
+
+		sweeper.schedule();
+		await sleep(50);
+		sweeper.clear();
+
+		assert.deepEqual(timedoutTasks, [], "sqlite3 串行执行时，后续任务尚未开始，不应计入执行超时");
+	});
 });
 
 describe("createFinalizeScheduler", () => {

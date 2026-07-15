@@ -1039,6 +1039,35 @@ describe("SQLiteExecutor", () => {
 				await exec.close();
 			}
 		});
+
+		test("大量前置工作不会消耗后续短 SQL 的执行超时", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 10000,
+			});
+			try {
+				const slowSql = `
+					WITH RECURSIVE counter(value) AS (
+						VALUES(0)
+						UNION ALL
+						SELECT value + 1 FROM counter WHERE value < 5000000
+					)
+					SELECT sum(value) AS total FROM counter
+				`;
+				const [slowResult, fastResult] = await Promise.allSettled([
+					exec.query(slowSql),
+					exec.query("SELECT 1 AS value", [], { timeout: 100 }),
+				]);
+
+				assert.equal(slowResult.status, "fulfilled");
+				assert.deepEqual(fastResult, {
+					status: "fulfilled",
+					value: [{ value: 1 }],
+				});
+			} finally {
+				await exec.close();
+			}
+		});
 	});
 
 	describe("错误隔离", () => {

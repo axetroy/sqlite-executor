@@ -72,7 +72,8 @@ export function prepareTaskTimeout(task, metrics) {
 
 /**
  * 创建 sweep 定时器管理器。
- * schedule() 启动定期扫描，检查 inflight 任务是否超时；
+ * sqlite3 串行执行 stdin 中的语句，因此只有 inflight 首任务正在执行；
+ * schedule() 定期检查首任务是否超时，后续任务在成为首任务后才开始计时；
  * clear() 停止定时器。
  *
  * @param {{
@@ -89,11 +90,10 @@ export function createSweeper({ inflight, sweepIntervalMs, handleTaskTimeout }) 
 		sweepTimer = setTimeout(() => {
 			sweepTimer = null;
 			const now = performance.now();
-			inflight.forEach((task) => {
-				if (now - task.startTime > task.timeout) {
-					handleTaskTimeout(task);
-				}
-			});
+			const task = inflight.first;
+			if (task && now - task.startTime > task.timeout) {
+				handleTaskTimeout(task);
+			}
 			if (inflight.count > 0) {
 				schedule();
 			}
