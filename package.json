@@ -1,6 +1,6 @@
 {
     "name": "sqlite-executor",
-    "version": "4.0.11",
+    "version": "4.0.12",
     "private": false,
     "description": "SQLite executor for Node.js",
     "sideEffects": false,
