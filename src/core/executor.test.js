@@ -1445,4 +1445,450 @@ describe("SQLiteExecutor", () => {
 		db[Symbol.dispose]();
 	});
 	});
+
+	describe("索引性能测试", () => {
+		test("大表查询：taskId 索引对性能的影响", async () => {
+			const dbFile = path.join(os.tmpdir(), `index-perf-test-${Date.now()}.db`);
+			const perfSqlite = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				statementTimeout: 60000,
+			});
+
+			try {
+				// 创建 subTasks 表（模拟用户的表结构）
+				await perfSqlite.execute(`
+					CREATE TABLE IF NOT EXISTS subTasks (
+						id INTEGER PRIMARY KEY AUTOINCREMENT,
+						taskId INTEGER NOT NULL,
+						subTaskState TEXT NOT NULL,
+						fileSize INTEGER NOT NULL DEFAULT 0
+					)
+				`);
+
+				// 批量插入 100 万条测试数据
+				const TOTAL_ROWS = 1000000;
+				const BATCH_SIZE = 10000;
+				const taskIds = [1, 2, 3, 4, 5]; // 5 个不同的 taskId
+
+				console.log(`\n开始插入 ${TOTAL_ROWS.toLocaleString()} 条测试数据...`);
+				const startInsert = Date.now();
+
+				for (let i = 0; i < TOTAL_ROWS; i += BATCH_SIZE) {
+					const values = [];
+					const params = [];
+					for (let j = 0; j < BATCH_SIZE && i + j < TOTAL_ROWS; j++) {
+						values.push(`(?, ?, ?, ?)`);
+						const taskId = taskIds[(i + j) % taskIds.length];
+						const state = ["DONE", "ERROR", "PENDING"][(i + j) % 3];
+						const fileSize = 100 + ((i + j) * 7) % 10000;
+						params.push(taskId, state, fileSize);
+					}
+					await perfSqlite.execute(
+						`INSERT INTO subTasks (taskId, subTaskState, fileSize) VALUES ${values.join(", ")}`,
+						params,
+					);
+					if ((i + BATCH_SIZE) % 50000 === 0) {
+						console.log(`已插入 ${(i + BATCH_SIZE).toLocaleString()} / ${TOTAL_ROWS.toLocaleString()}`);
+					}
+				}
+				const insertTime = Date.now() - startInsert;
+				console.log(`数据插入完成，耗时: ${insertTime}ms`);
+
+				// 查询前先检查 EXPLAIN QUERY PLAN（无索引的情况）
+				const targetTaskId = 1;
+				console.log(`\n=== 无索引情况 ===`);
+				const explainNoIndex = await perfSqlite.query(`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM subTasks WHERE taskId = ${targetTaskId}`);
+				console.log("查询计划（无索引）:", JSON.stringify(explainNoIndex));
+
+				// 测试无索引时的查询性能
+				const queryStartNoIndex = Date.now();
+				const rowsNoIndex = await perfSqlite.query(
+					`
+					SELECT
+						COUNT(*) AS fileCount,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS doneCount,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS errorCount,
+						COALESCE(SUM(fileSize), 0) AS totalFileSize,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN fileSize ELSE 0 END), 0) AS doneFileSize
+					FROM subTasks
+					WHERE taskId = ?
+					`,
+					["DONE", "ERROR", "DONE", targetTaskId],
+				);
+				const queryTimeNoIndex = Date.now() - queryStartNoIndex;
+				console.log(`无索引查询结果:`, rowsNoIndex[0]);
+				console.log(`无索引查询耗时: ${queryTimeNoIndex}ms`);
+
+				// 添加索引
+				console.log(`\n=== 添加索引 ===`);
+				const indexStart = Date.now();
+				await perfSqlite.execute(`CREATE INDEX IF NOT EXISTS idx_subtasks_taskid ON subTasks(taskId)`);
+				const indexTime = Date.now() - indexStart;
+				console.log(`索引创建耗时: ${indexTime}ms`);
+
+				// 检查 EXPLAIN QUERY PLAN（有索引的情况）
+				const explainWithIndex = await perfSqlite.query(`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM subTasks WHERE taskId = ${targetTaskId}`);
+				console.log("查询计划（有索引）:", JSON.stringify(explainWithIndex));
+
+				// 测试有索引时的查询性能
+				const queryStartWithIndex = Date.now();
+				const rowsWithIndex = await perfSqlite.query(
+					`
+					SELECT
+						COUNT(*) AS fileCount,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS doneCount,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS errorCount,
+						COALESCE(SUM(fileSize), 0) AS totalFileSize,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN fileSize ELSE 0 END), 0) AS doneFileSize
+					FROM subTasks
+					WHERE taskId = ?
+					`,
+					["DONE", "ERROR", "DONE", targetTaskId],
+				);
+				const queryTimeWithIndex = Date.now() - queryStartWithIndex;
+				console.log(`有索引查询结果:`, rowsWithIndex[0]);
+				console.log(`有索引查询耗时: ${queryTimeWithIndex}ms`);
+
+				// 性能对比
+				console.log(`\n=== 性能对比 ===`);
+				console.log(`无索引: ${queryTimeNoIndex}ms`);
+				console.log(`有索引: ${queryTimeWithIndex}ms`);
+				if (queryTimeNoIndex > 0) {
+					const speedup = (queryTimeNoIndex / queryTimeWithIndex).toFixed(2);
+					console.log(`加速比: ${speedup}x`);
+				}
+
+				// 验证结果正确性
+				assert.deepEqual(rowsNoIndex, rowsWithIndex, "有索引和无索引的查询结果应一致");
+
+				// 有索引的查询应该更快（至少 2 倍）
+				assert.ok(
+					queryTimeWithIndex < queryTimeNoIndex / 2,
+					`有索引查询应该明显更快: 无索引=${queryTimeNoIndex}ms, 有索引=${queryTimeWithIndex}ms`,
+				);
+			} finally {
+				await perfSqlite.close();
+				try { fs.unlinkSync(dbFile); } catch {}
+			}
+		});
+
+		test("复合索引：taskId + subTaskState 的组合查询优化", async () => {
+			const dbFile = path.join(os.tmpdir(), `composite-index-test-${Date.now()}.db`);
+			const perfSqlite = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				statementTimeout: 60000,
+			});
+
+			try {
+				await perfSqlite.execute(`
+					CREATE TABLE IF NOT EXISTS subTasks2 (
+						id INTEGER PRIMARY KEY AUTOINCREMENT,
+						taskId INTEGER NOT NULL,
+						subTaskState TEXT NOT NULL,
+						fileSize INTEGER NOT NULL DEFAULT 0
+					)
+				`);
+
+				// 插入 10 万条数据
+				const TOTAL_ROWS = 100000;
+				const taskIds = [1, 2, 3, 4, 5];
+
+				for (let i = 0; i < TOTAL_ROWS; i++) {
+					const taskId = taskIds[i % taskIds.length];
+					const state = ["DONE", "ERROR", "PENDING"][i % 3];
+					const fileSize = 100 + (i * 7) % 10000;
+					await perfSqlite.execute(
+						"INSERT INTO subTasks2 (taskId, subTaskState, fileSize) VALUES (?, ?, ?)",
+						[taskId, state, fileSize],
+					);
+				}
+
+				// 测试不同类型的索引
+				const targetTaskId = 1;
+				const targetState = "DONE";
+
+				// 1. 无索引
+				const timeNoIndex = await measureQueryTime(perfSqlite, targetTaskId, targetState);
+
+				// 2. 单列索引
+				await perfSqlite.execute("CREATE INDEX idx_taskid ON subTasks2(taskId)");
+				const timeSingleIndex = await measureQueryTime(perfSqlite, targetTaskId, targetState);
+
+				// 3. 复合索引
+				await perfSqlite.execute("CREATE INDEX idx_taskid_state ON subTasks2(taskId, subTaskState)");
+				const timeCompositeIndex = await measureQueryTime(perfSqlite, targetTaskId, targetState);
+
+				console.log(`\n索引类型对比 (taskId=${targetTaskId}, subTaskState=${targetState}):`);
+				console.log(`无索引: ${timeNoIndex}ms`);
+				console.log(`单列索引: ${timeSingleIndex}ms`);
+				console.log(`复合索引: ${timeCompositeIndex}ms`);
+
+				// 验证复合索引比单列索引更好
+				assert.ok(timeCompositeIndex <= timeSingleIndex, "复合索引不应比单列索引慢");
+			} finally {
+				await perfSqlite.close();
+				try { fs.unlinkSync(dbFile); } catch {}
+			}
+		});
+	});
+});
+
+// 辅助函数：测量查询时间
+async function measureQueryTime(db, taskId, state) {
+	const start = Date.now();
+	await db.query(
+		`
+		SELECT
+			COUNT(*) AS fileCount,
+			COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS doneCount,
+			COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS errorCount,
+			COALESCE(SUM(fileSize), 0) AS totalFileSize,
+			COALESCE(SUM(CASE WHEN subTaskState = ? THEN fileSize ELSE 0 END), 0) AS doneFileSize
+		FROM subTasks
+		WHERE taskId = ?
+		`,
+		[state, "ERROR", state, taskId],
+	);
+	return Date.now() - start;
+}
+
+describe("索引诊断测试（针对已存在索引但仍然超时的情况）", () => {
+	test("诊断：索引存在但仍然慢的原因", async () => {
+		const dbFile = path.join(os.tmpdir(), `index-diagnosis-${Date.now()}.db`);
+		const diagSqlite = new SQLiteExecutor({
+			binary: SQLite3BinaryFile,
+			database: dbFile,
+			statementTimeout: 60000,
+		});
+
+		try {
+			// 创建表
+			await diagSqlite.execute(`
+				CREATE TABLE IF NOT EXISTS subTasks (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					taskId INTEGER NOT NULL,
+					subTaskState TEXT NOT NULL,
+					fileSize INTEGER NOT NULL DEFAULT 0
+				)
+			`);
+
+			// 创建索引（模拟用户的环境）
+			await diagSqlite.execute(`CREATE INDEX IF NOT EXISTS idx_subTasks_taskId ON subTasks(taskId)`);
+			await diagSqlite.execute(`CREATE INDEX IF NOT EXISTS idx_subTasks_taskId_state ON subTasks(taskId, subTaskState)`);
+
+			// 插入 10 万条测试数据（每个 taskId 约 5 万条）
+			const TOTAL_ROWS = 100000;
+			const BATCH_SIZE = 5000;
+			const taskIds = [1, 2]; // 只有 2 个 taskId
+
+			console.log(`\n插入 ${TOTAL_ROWS} 条测试数据...`);
+			for (let i = 0; i < TOTAL_ROWS; i += BATCH_SIZE) {
+				const values = [];
+				const params = [];
+				for (let j = 0; j < BATCH_SIZE && i + j < TOTAL_ROWS; j++) {
+					values.push(`(?, ?, ?)`);
+					const taskId = taskIds[(i + j) % taskIds.length];
+					const state = ["DONE", "ERROR", "PENDING"][(i + j) % 3];
+					const fileSize = 100 + ((i + j) * 7) % 10000;
+					params.push(taskId, state, fileSize);
+				}
+				await diagSqlite.execute(
+					`INSERT INTO subTasks (taskId, subTaskState, fileSize) VALUES ${values.join(", ")}`,
+					params,
+				);
+			}
+
+			// 1. 检查表统计信息
+			console.log("\n=== 1. 表统计信息 ===");
+			const tableStats = await diagSqlite.query("SELECT COUNT(*) as total, COUNT(DISTINCT taskId) as uniqueTasks FROM subTasks");
+			console.log("表统计:", tableStats[0]);
+
+			// 2. 检查每个 taskId 的数据分布
+			console.log("\n=== 2. 数据分布 ===");
+			const distribution = await diagSqlite.query("SELECT taskId, COUNT(*) as count FROM subTasks GROUP BY taskId ORDER BY taskId");
+			console.log("每个 taskId 的行数:", distribution);
+
+			// 3. 检查索引状态
+			console.log("\n=== 3. 索引列表 ===");
+			const indexes = await diagSqlite.query("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'subTasks'");
+			console.log("索引列表:", indexes);
+
+			// 4. 运行 ANALYZE 更新统计信息
+			console.log("\n=== 4. 运行 ANALYZE ===");
+			await diagSqlite.execute("ANALYZE");
+			console.log("ANALYZE 完成");
+
+			// 5. 检查 EXPLAIN QUERY PLAN
+			console.log("\n=== 5. 查询执行计划 ===");
+			const targetTaskId = 1;
+			const explainPlan = await diagSqlite.query(`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM subTasks WHERE taskId = ${targetTaskId}`);
+			console.log("执行计划:", JSON.stringify(explainPlan, null, 2));
+
+			// 6. 测量查询时间（多次取平均）
+			console.log("\n=== 6. 查询性能测试 ===");
+			const queryTimes = [];
+			for (let i = 0; i < 5; i++) {
+				const start = Date.now();
+				await diagSqlite.query(
+					`
+					SELECT
+						COUNT(*) AS fileCount,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS doneCount,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS errorCount,
+						COALESCE(SUM(fileSize), 0) AS totalFileSize,
+						COALESCE(SUM(CASE WHEN subTaskState = ? THEN fileSize ELSE 0 END), 0) AS doneFileSize
+					FROM subTasks
+					WHERE taskId = ?
+					`,
+					["DONE", "ERROR", "DONE", targetTaskId],
+				);
+				queryTimes.push(Date.now() - start);
+			}
+			const avgTime = queryTimes.reduce((a, b) => a + b, 0) / queryTimes.length;
+			console.log(`5 次查询时间: ${queryTimes.join("ms, ")}ms`);
+			console.log(`平均查询时间: ${avgTime.toFixed(2)}ms`);
+
+			// 7. 测试 PRAGMA 设置
+			console.log("\n=== 7. PRAGMA 设置检查 ===");
+			const pragmaCacheSize = await diagSqlite.query("PRAGMA cache_size");
+			const pragmaPageSize = await diagSqlite.query("PRAGMA page_size");
+			const pragmaSynchronous = await diagSqlite.query("PRAGMA synchronous");
+			console.log(`cache_size: ${pragmaCacheSize[0].cache_size}`);
+			console.log(`page_size: ${pragmaPageSize[0].page_size}`);
+			console.log(`synchronous: ${pragmaSynchronous[0].synchronous}`);
+
+			// 8. 测试优化后的查询
+			console.log("\n=== 8. 优化查询对比 ===");
+			const originalQuery = `
+				SELECT
+					COUNT(*) AS fileCount,
+					COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS doneCount,
+					COALESCE(SUM(CASE WHEN subTaskState = ? THEN 1 ELSE 0 END), 0) AS errorCount,
+					COALESCE(SUM(fileSize), 0) AS totalFileSize,
+					COALESCE(SUM(CASE WHEN subTaskState = ? THEN fileSize ELSE 0 END), 0) AS doneFileSize
+				FROM subTasks
+				WHERE taskId = ?
+			`;
+
+			// 简化版查询（去掉不必要的 COALESCE）
+			const optimizedQuery = `
+				SELECT
+					COUNT(*) AS fileCount,
+					SUM(subTaskState = ?) AS doneCount,
+					SUM(subTaskState = ?) AS errorCount,
+					SUM(fileSize) AS totalFileSize,
+					SUM(CASE WHEN subTaskState = ? THEN fileSize ELSE 0 END) AS doneFileSize
+				FROM subTasks
+				WHERE taskId = ?
+			`;
+
+			const t1 = Date.now();
+			await diagSqlite.query(originalQuery, ["DONE", "ERROR", "DONE", targetTaskId]);
+			const timeOriginal = Date.now() - t1;
+
+			const t2 = Date.now();
+			await diagSqlite.query(optimizedQuery, ["DONE", "ERROR", "DONE", targetTaskId]);
+			const timeOptimized = Date.now() - t2;
+
+			console.log(`原始查询: ${timeOriginal}ms`);
+			console.log(`优化查询: ${timeOptimized}ms`);
+
+			// 验证优化查询结果正确性
+			const resultOriginal = await diagSqlite.query(originalQuery, ["DONE", "ERROR", "DONE", targetTaskId]);
+			const resultOptimized = await diagSqlite.query(optimizedQuery, ["DONE", "ERROR", "DONE", targetTaskId]);
+			console.log("\n原始结果:", resultOriginal[0]);
+			console.log("优化结果:", resultOptimized[0]);
+
+			assert.deepEqual(resultOriginal, resultOptimized, "优化查询应返回相同结果");
+		} finally {
+			await diagSqlite.close();
+			try { fs.unlinkSync(dbFile); } catch {}
+		}
+	});
+
+	test("诊断：极端情况 - 单个 taskId 包含大量数据", async () => {
+		const dbFile = path.join(os.tmpdir(), `skewed-data-${Date.now()}.db`);
+		const skewSqlite = new SQLiteExecutor({
+			binary: SQLite3BinaryFile,
+			database: dbFile,
+			statementTimeout: 60000,
+		});
+
+		try {
+			await skewSqlite.execute(`
+				CREATE TABLE IF NOT EXISTS skewed_tasks (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					taskId INTEGER NOT NULL,
+					subTaskState TEXT NOT NULL,
+					fileSize INTEGER NOT NULL DEFAULT 0
+				)
+			`);
+			await skewSqlite.execute("CREATE INDEX idx_skewed_taskId ON skewed_tasks(taskId)");
+
+			// 模拟极端情况：taskId=1 有 99000 条，taskId=2 只有 1000 条
+			console.log("\n模拟数据倾斜：taskId=1 有 99% 的数据");
+
+			// 插入 99000 条 taskId=1
+			const batch1 = 99000;
+			const values1 = [];
+			const params1 = [];
+			for (let i = 0; i < batch1; i++) {
+				values1.push(`(1, ?, ?)`);
+				params1.push(["DONE", "ERROR", "PENDING"][i % 3], 100 + (i * 7) % 10000);
+			}
+			await skewSqlite.execute(
+				`INSERT INTO skewed_tasks (taskId, subTaskState, fileSize) VALUES ${values1.join(", ")}`,
+				params1,
+			);
+
+			// 插入 1000 条 taskId=2
+			const batch2 = 1000;
+			const values2 = [];
+			const params2 = [];
+			for (let i = 0; i < batch2; i++) {
+				values2.push(`(2, ?, ?)`);
+				params2.push(["DONE", "ERROR", "PENDING"][i % 3], 100 + (i * 7) % 10000);
+			}
+			await skewSqlite.execute(
+				`INSERT INTO skewed_tasks (taskId, subTaskState, fileSize) VALUES ${values2.join(", ")}`,
+				params2,
+			);
+
+			// 运行 ANALYZE
+			await skewSqlite.execute("ANALYZE");
+
+			console.log("\n数据分布:");
+			const dist = await skewSqlite.query("SELECT taskId, COUNT(*) as cnt FROM skewed_tasks GROUP BY taskId");
+			console.log(dist);
+
+			// 测试不同 taskId 的查询时间
+			console.log("\n查询时间对比:");
+
+			const timeTask1 = [];
+			for (let i = 0; i < 3; i++) {
+				const start = Date.now();
+				await skewSqlite.query("SELECT COUNT(*) FROM skewed_tasks WHERE taskId = 1");
+				timeTask1.push(Date.now() - start);
+			}
+			console.log(`taskId=1 (99% 数据): 平均 ${timeTask1.reduce((a, b) => a + b) / timeTask1.length}ms`);
+
+			const timeTask2 = [];
+			for (let i = 0; i < 3; i++) {
+				const start = Date.now();
+				await skewSqlite.query("SELECT COUNT(*) FROM skewed_tasks WHERE taskId = 2");
+				timeTask2.push(Date.now() - start);
+			}
+			console.log(`taskId=2 (1% 数据): 平均 ${timeTask2.reduce((a, b) => a + b) / timeTask2.length}ms`);
+
+			// 如果 taskId=1 的查询时间明显更长，说明是数据倾斜问题
+			if (timeTask1.reduce((a, b) => a + b) > timeTask2.reduce((a, b) => a + b) * 10) {
+				console.log("\n⚠️ 检测到数据倾斜问题！taskId=1 包含过多数据，即使有索引也需要大量 I/O");
+			}
+		} finally {
+			await skewSqlite.close();
+			try { fs.unlinkSync(dbFile); } catch {}
+		}
+	});
 });
