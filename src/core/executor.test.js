@@ -1072,6 +1072,19 @@ describe("SQLiteExecutor", () => {
 	});
 
 	describe("超时错误隔离与后续执行", () => {
+		// 使用文件数据库的 helper，避免 :memory: 在进程重启后丢失数据
+		function createFileExecutor(opts = {}) {
+			const dbFile = path.join(os.tmpdir(), `timeout-iso-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				autoRestart: true,
+				statementTimeout: 30000,
+				...opts,
+			});
+			return { exec, dbFile };
+		}
+
 		test("execute 超时后错误被正确捕获，后续 SQL 正常执行", async () => {
 			const exec = new SQLiteExecutor({
 				binary: SQLite3BinaryFile,
@@ -1086,9 +1099,10 @@ describe("SQLiteExecutor", () => {
 				// 等待进程恢复（硬超时触发后自动重启）
 				await new Promise((r) => setTimeout(r, 500));
 
-				await exec.execute("CREATE TABLE IF NOT EXISTS after_exec_timeout (id INTEGER PRIMARY KEY, val TEXT)");
-				await exec.execute("INSERT INTO after_exec_timeout (val) VALUES (?)", ["ok"]);
-				const rows = await exec.query("SELECT * FROM after_exec_timeout");
+				// 使用显式超时避免后续操作也被 1ms 超时误杀
+				await exec.execute("CREATE TABLE IF NOT EXISTS after_exec_timeout (id INTEGER PRIMARY KEY, val TEXT)", [], { timeout: 60000 });
+				await exec.execute("INSERT INTO after_exec_timeout (val) VALUES (?)", ["ok"], { timeout: 60000 });
+				const rows = await exec.query("SELECT * FROM after_exec_timeout", [], { timeout: 60000 });
 				assert.deepEqual(rows, [{ id: 1, val: "ok" }]);
 			} finally {
 				await exec.close();
@@ -1106,12 +1120,11 @@ describe("SQLiteExecutor", () => {
 				assert.ok(result.reason instanceof Error);
 				assert.match(result.reason.message, /timed out after/);
 
-				// 等待进程恢复
 				await new Promise((r) => setTimeout(r, 500));
 
-				await exec.execute("CREATE TABLE IF NOT EXISTS after_query_timeout (id INTEGER PRIMARY KEY, val TEXT)");
-				await exec.execute("INSERT INTO after_query_timeout (val) VALUES (?)", ["ok"]);
-				const rows = await exec.query("SELECT * FROM after_query_timeout");
+				await exec.execute("CREATE TABLE IF NOT EXISTS after_query_timeout (id INTEGER PRIMARY KEY, val TEXT)", [], { timeout: 60000 });
+				await exec.execute("INSERT INTO after_query_timeout (val) VALUES (?)", ["ok"], { timeout: 60000 });
+				const rows = await exec.query("SELECT * FROM after_query_timeout", [], { timeout: 60000 });
 				assert.deepEqual(rows, [{ id: 1, val: "ok" }]);
 			} finally {
 				await exec.close();
@@ -1134,12 +1147,11 @@ describe("SQLiteExecutor", () => {
 				assert.ok(result.reason instanceof Error);
 				assert.match(result.reason.message, /timed out after/);
 
-				// 等待进程恢复
 				await new Promise((r) => setTimeout(r, 500));
 
-				await exec.execute("CREATE TABLE IF NOT EXISTS after_stream_timeout (id INTEGER PRIMARY KEY, val TEXT)");
-				await exec.execute("INSERT INTO after_stream_timeout (val) VALUES (?)", ["ok"]);
-				const rows = await exec.query("SELECT * FROM after_stream_timeout");
+				await exec.execute("CREATE TABLE IF NOT EXISTS after_stream_timeout (id INTEGER PRIMARY KEY, val TEXT)", [], { timeout: 60000 });
+				await exec.execute("INSERT INTO after_stream_timeout (val) VALUES (?)", ["ok"], { timeout: 60000 });
+				const rows = await exec.query("SELECT * FROM after_stream_timeout", [], { timeout: 60000 });
 				assert.deepEqual(rows, [{ id: 1, val: "ok" }]);
 			} finally {
 				await exec.close();
@@ -1154,20 +1166,19 @@ describe("SQLiteExecutor", () => {
 			try {
 				await settleOp(() => exec.execute("SELECT randomblob(100000000)"));
 
-				// 等待进程恢复
 				await new Promise((r) => setTimeout(r, 500));
 
-				await exec.execute("CREATE TABLE IF NOT EXISTS multi_after_timeout (id INTEGER PRIMARY KEY, val TEXT)");
+				await exec.execute("CREATE TABLE IF NOT EXISTS multi_after_timeout (id INTEGER PRIMARY KEY, val TEXT)", [], { timeout: 60000 });
 
 				const promises = [];
 				for (let i = 0; i < 20; i++) {
 					promises.push(
-						exec.execute("INSERT INTO multi_after_timeout (val) VALUES (?)", [`n${i}`]),
+						exec.execute("INSERT INTO multi_after_timeout (val) VALUES (?)", [`n${i}`], { timeout: 60000 }),
 					);
 				}
 				await Promise.all(promises);
 
-				const rows = await exec.query("SELECT val FROM multi_after_timeout ORDER BY id ASC");
+				const rows = await exec.query("SELECT val FROM multi_after_timeout ORDER BY id ASC", [], { timeout: 60000 });
 				assert.equal(rows.length, 20);
 				assert.deepEqual(
 					rows.map((r) => r.val),
@@ -1186,14 +1197,13 @@ describe("SQLiteExecutor", () => {
 			try {
 				await settleOp(() => exec.query("SELECT randomblob(100000000) AS big"));
 
-				// 等待进程恢复
 				await new Promise((r) => setTimeout(r, 500));
 
-				await exec.execute("CREATE TABLE IF NOT EXISTS stream_after_timeout (id INTEGER PRIMARY KEY, val TEXT)");
-				await exec.execute("INSERT INTO stream_after_timeout (val) VALUES ('a'), ('b'), ('c')");
+				await exec.execute("CREATE TABLE IF NOT EXISTS stream_after_timeout (id INTEGER PRIMARY KEY, val TEXT)", [], { timeout: 60000 });
+				await exec.execute("INSERT INTO stream_after_timeout (val) VALUES ('a'), ('b'), ('c')", [], { timeout: 60000 });
 
 				const collected = [];
-				for await (const row of exec.stream("SELECT * FROM stream_after_timeout ORDER BY id ASC")) {
+				for await (const row of exec.stream("SELECT * FROM stream_after_timeout ORDER BY id ASC", [], { timeout: 60000 })) {
 					collected.push(row);
 				}
 				assert.equal(collected.length, 3);
@@ -1201,6 +1211,229 @@ describe("SQLiteExecutor", () => {
 				assert.equal(collected[2].val, "c");
 			} finally {
 				await exec.close();
+			}
+		});
+	});
+
+	describe("读写分离 + 超时", () => {
+		function cleanup(dbFile) {
+			try { fs.unlinkSync(dbFile); } catch {}
+		}
+
+		test("读写分离下 query 超时后后续查询正常执行", async () => {
+			const dbFile = path.join(os.tmpdir(), `rw-timeout-${Date.now()}.db`);
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				poolSize: 2,
+				statementTimeout: 30000,
+			});
+			try {
+				await exec.execute("CREATE TABLE IF NOT EXISTS rw_timeout_test (id INTEGER PRIMARY KEY, val TEXT)", [], { timeout: 60000 });
+				await exec.execute("INSERT INTO rw_timeout_test VALUES (1, 'hello'), (2, 'world')", [], { timeout: 60000 });
+				await new Promise((r) => setTimeout(r, 500));
+
+				const slowResult = await settleOp(() =>
+					exec.query("SELECT randomblob(5000000) AS big", [], { timeout: 1 }),
+				);
+				assert.equal(slowResult.status, "rejected");
+				assert.ok(slowResult.reason instanceof Error);
+				assert.match(slowResult.reason.message, /timed out after/);
+
+				const rows = await exec.query("SELECT * FROM rw_timeout_test ORDER BY id ASC", [], { timeout: 60000 });
+				assert.equal(rows.length, 2);
+				assert.deepEqual(rows, [
+					{ id: 1, val: "hello" },
+					{ id: 2, val: "world" },
+				]);
+			} finally {
+				await exec.close();
+				cleanup(dbFile);
+			}
+		});
+
+		test("读写分离下 execute 超时后 reader 查询不受影响", async () => {
+			const dbFile = path.join(os.tmpdir(), `rw-exec-timeout-${Date.now()}.db`);
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				poolSize: 2,
+				statementTimeout: 30000,
+			});
+			try {
+				await exec.execute("CREATE TABLE IF NOT EXISTS rw_exec_timeout (id INTEGER PRIMARY KEY, val TEXT)", [], { timeout: 60000 });
+				await exec.execute("INSERT INTO rw_exec_timeout VALUES (1, 'data')", [], { timeout: 60000 });
+				await new Promise((r) => setTimeout(r, 500));
+
+				const writeResult = await settleOp(() =>
+					exec.execute("SELECT randomblob(100000000)", [], { timeout: 1 }),
+				);
+				assert.equal(writeResult.status, "rejected");
+
+				await new Promise((r) => setTimeout(r, 500));
+
+				// reader 查询应不受影响（独立进程）
+				const rows = await exec.query("SELECT * FROM rw_exec_timeout", [], { timeout: 60000 });
+				assert.equal(rows.length, 1);
+				assert.equal(rows[0].val, "data");
+			} finally {
+				await exec.close();
+				cleanup(dbFile);
+			}
+		});
+	});
+
+	describe("大量并发更新 + 超时隔离", () => {
+		function cleanup(dbFile) {
+			for (const suffix of ["", "-wal", "-shm"]) {
+				try { fs.unlinkSync(dbFile + suffix); } catch {}
+			}
+		}
+
+		test("大量并发 INSERT 中部分超时不污染其他写入（文件 DB）", async () => {
+			const dbFile = path.join(os.tmpdir(), `bulk-insert-timeout-${Date.now()}.db`);
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				autoRestart: true,
+				statementTimeout: 30000,
+			});
+			try {
+				await exec.execute("CREATE TABLE IF NOT EXISTS bulk_ins (id INTEGER PRIMARY KEY AUTOINCREMENT, val TEXT, ts INTEGER)", [], { timeout: 60000 });
+
+				const ops = [];
+				// 40 个正常写入
+				for (let i = 0; i < 40; i++) {
+					ops.push(
+						settleOp(() =>
+							exec.execute("INSERT INTO bulk_ins (val, ts) VALUES (?, ?)", [`normal-${i}`, i], { timeout: 60000 }),
+						),
+					);
+				}
+				// 5 个慢查询（1ms 超时）→ 触发硬超时 + 进程重启
+				for (let i = 0; i < 5; i++) {
+					ops.push(
+						settleOp(() =>
+							exec.execute("SELECT randomblob(100000000)", [], { timeout: 1 }),
+						),
+					);
+				}
+
+				await Promise.allSettled(ops);
+
+				// 等待进程恢复
+				await new Promise((r) => setTimeout(r, 500));
+
+				// 从文件数据库读回，验证持久化的数据
+				const rows = await exec.query("SELECT COUNT(*) AS cnt FROM bulk_ins", [], { timeout: 60000 });
+				assert.ok(rows[0].cnt > 0, "应有数据持久化到文件 DB");
+
+				// 验证写入的数据内容正确
+				const data = await exec.query("SELECT val, ts FROM bulk_ins ORDER BY ts ASC", [], { timeout: 60000 });
+				for (let i = 0; i < data.length; i++) {
+					assert.equal(data[i].val, `normal-${data[i].ts}`, `行 ${i} 数据应完整`);
+				}
+			} finally {
+				await exec.close();
+				cleanup(dbFile);
+			}
+		});
+
+		test("大量并发 mixed 操作 + 超时后数据一致性不受影响（文件 DB）", async () => {
+			const dbFile = path.join(os.tmpdir(), `bulk-mixed-${Date.now()}.db`);
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				autoRestart: true,
+				statementTimeout: 30000,
+			});
+			try {
+				await exec.execute("CREATE TABLE IF NOT EXISTS bulk_mixed (id INTEGER PRIMARY KEY AUTOINCREMENT, tag TEXT, step INTEGER)", [], { timeout: 60000 });
+
+				// 先写入一批基准数据（确保超时/重启前已有持久化数据）
+				for (let i = 0; i < 10; i++) {
+					await exec.execute("INSERT INTO bulk_mixed (tag, step) VALUES (?, ?)", [`before-${i}`, i], { timeout: 60000 });
+				}
+
+				// 并发：正常操作 + 慢查询（短 timeout 触发进程重启）
+				const ops = [];
+				for (let i = 0; i < 30; i++) {
+					if (i % 4 === 0) {
+						ops.push(settleOp(() => exec.execute("SELECT randomblob(100000000)", [], { timeout: 1 })));
+					} else if (i % 4 === 1) {
+						ops.push(settleOp(() => exec.execute("INSERT INTO bulk_mixed (tag, step) VALUES (?, ?)", [`during-${i}`, i], { timeout: 60000 })));
+					} else if (i % 4 === 2) {
+						ops.push(settleOp(() => exec.query("SELECT COUNT(*) AS cnt FROM bulk_mixed", [], { timeout: 60000 })));
+					} else {
+						ops.push(settleOp(() => exec.execute("INSERT INTO bulk_mixed (tag, step) VALUES (?, ?)", [`during-${i}`, i], { timeout: 60000 })));
+					}
+				}
+
+				await Promise.allSettled(ops);
+				await new Promise((r) => setTimeout(r, 500));
+
+				// 基准数据应始终完整（文件 DB 持久化，进程重启后仍在）
+				const beforeRows = await exec.query("SELECT tag, step FROM bulk_mixed WHERE tag LIKE 'before-%' ORDER BY step ASC", [], { timeout: 60000 });
+				assert.ok(beforeRows.length >= 10, `基准数据应完整: ${beforeRows.length}/10`);
+				for (let i = 0; i < Math.min(beforeRows.length, 10); i++) {
+					assert.equal(beforeRows[i].tag, `before-${i}`);
+				}
+
+				// 系统仍可正常写入
+				await exec.execute("INSERT INTO bulk_mixed (tag, step) VALUES (?, ?)", [`after-0`, 999], { timeout: 60000 });
+				const afterRows = await exec.query("SELECT tag, step FROM bulk_mixed WHERE tag = 'after-0'", [], { timeout: 60000 });
+				assert.equal(afterRows.length, 1);
+				assert.equal(afterRows[0].step, 999);
+			} finally {
+				await exec.close();
+				cleanup(dbFile);
+			}
+		});
+
+		test("多轮并发更新 + 超时重启后数据不丢失（文件 DB）", async () => {
+			const dbFile = path.join(os.tmpdir(), `bulk-recovery-${Date.now()}.db`);
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				autoRestart: true,
+				statementTimeout: 30000,
+			});
+			try {
+				await exec.execute("CREATE TABLE IF NOT EXISTS bulk_rec (id INTEGER PRIMARY KEY AUTOINCREMENT, val TEXT, round INTEGER)", [], { timeout: 60000 });
+
+				// 种子数据（在超时重启之前持久化）
+				for (let i = 0; i < 5; i++) {
+					await exec.execute("INSERT INTO bulk_rec (val, round) VALUES (?, ?)", [`seed-${i}`, 0], { timeout: 60000 });
+				}
+
+				for (let round = 1; round <= 3; round++) {
+					// 先写入本轮数据（确保在超时之前到达文件 DB）
+					await exec.execute("INSERT INTO bulk_rec (val, round) VALUES (?, ?)", [`round-${round}-pre`, round], { timeout: 60000 });
+
+					// 然后触发超时（可能导致进程重启，但文件 DB 已有本轮数据）
+					await settleOp(() => exec.execute("SELECT randomblob(100000000)", [], { timeout: 1 }));
+					await new Promise((r) => setTimeout(r, 500));
+				}
+
+				// 全部数据应完整
+				const finalRows = await exec.query("SELECT val, round FROM bulk_rec ORDER BY id ASC", [], { timeout: 60000 });
+				assert.ok(finalRows.length >= 5, `种子数据应保留: ≥ 5`);
+
+				const seedRows = finalRows.filter((r) => r.round === 0);
+				assert.equal(seedRows.length, 5, "种子数据完整");
+				for (let i = 0; i < 5; i++) {
+					assert.equal(seedRows[i].val, `seed-${i}`);
+				}
+
+				for (let round = 1; round <= 3; round++) {
+					const roundRows = finalRows.filter((r) => r.round === round);
+					assert.ok(roundRows.length >= 1, `第 ${round} 轮应有数据`);
+					assert.ok(roundRows.some((r) => r.val === `round-${round}-pre`), `第 ${round} 轮 pre 数据应完整`);
+				}
+			} finally {
+				exec._process?.kill();
+				await exec.close();
+				cleanup(dbFile);
 			}
 		});
 	});
