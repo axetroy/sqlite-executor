@@ -69,6 +69,14 @@ export class SQLiteExecutor {
 			statementTimeout: this.#statementTimeout,
 			logger: this.#logger,
 			onTaskTimeout: () => {},
+			onHardTaskTimeout: (task) => {
+				this.#logger?.warn?.(
+					`SQLite process stuck: task timed out but sentinel never arrived (${task.sql}). Restarting...`,
+				);
+				this.#handleProcessFailure(
+					new Error(`Hard timeout: task exceeded ${task.timeout}ms without sentinel arrival`),
+				);
+			},
 		});
 		this.#startProcess();
 

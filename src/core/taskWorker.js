@@ -27,6 +27,7 @@ export class TaskWorker {
 	#batchSize;
 	#maxInflight;
 	#metrics;
+	#onHardTaskTimeout;
 	#sweeper;
 	/** 由 createFinalizeScheduler 创建的闭包，替代 #scheduleFinalizeCheck 方法 */
 	#scheduleFinalizeCheck;
@@ -47,15 +48,17 @@ export class TaskWorker {
 	 *   batchSize?: number
 	 *   metrics?: import("./metrics.js").Metrics
 	 *   sweepInterval?: number
+	 *   onHardTaskTimeout?: (task: object) => void,
 	 * }} options
 	 */
-	constructor({ binary, database, statementTimeout, logger, name, initMode, batchSize = DEFAULT_BATCH_SIZE, maxInflight = DEFAULT_MAX_INFLIGHT, metrics, sweepInterval = 100 }) {
+	constructor({ binary, database, statementTimeout, logger, name, initMode, batchSize = DEFAULT_BATCH_SIZE, maxInflight = DEFAULT_MAX_INFLIGHT, metrics, sweepInterval = 100, onHardTaskTimeout }) {
 		this.#name = name ?? "worker";
 		this.#statementTimeout = statementTimeout;
 		this.#logger = logger;
 		this.#batchSize = batchSize;
 		this.#maxInflight = maxInflight;
 		this.#metrics = metrics;
+		this.#onHardTaskTimeout = onHardTaskTimeout ?? (() => {});
 
 		// 创建共享管道组件
 		// ProcessManager 需在其他管道组件之前创建，因为 createPumpQueue 依赖它
@@ -68,6 +71,9 @@ export class TaskWorker {
 			handleTaskTimeout: (task) => {
 				const error = prepareTaskTimeout(task, this.#metrics);
 				if (error) this.#settleTask(task, error, undefined);
+			},
+			handleHardTaskTimeout: (task) => {
+				this.#onHardTaskTimeout?.(task);
 			},
 		});
 		this.#pump = createPumpQueue({

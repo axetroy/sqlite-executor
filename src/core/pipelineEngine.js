@@ -26,6 +26,7 @@ export class PipelineEngine {
 	#batchSize;
 	#maxInflight;
 	#onTaskTimeout;
+	#onHardTaskTimeout;
 	#active = false;
 	#sweeper;
 	/** 由 createFinalizeScheduler 创建的闭包，替代 #scheduleFinalizeCheck 方法 */
@@ -51,6 +52,7 @@ export class PipelineEngine {
 	 *   logger?: import("../index.js").Logger,
 	 *   batchSize?: number,
 	 *   onTaskTimeout?: (task: object) => void,
+	 *   onHardTaskTimeout?: (task: object) => void,
 	 * }} options
 	 */
 	constructor(
@@ -62,6 +64,7 @@ export class PipelineEngine {
 			batchSize = DEFAULT_BATCH_SIZE,
 			maxInflight = DEFAULT_MAX_INFLIGHT,
 			onTaskTimeout,
+			onHardTaskTimeout,
 			sweepInterval = 100,
 		},
 	) {
@@ -72,6 +75,7 @@ export class PipelineEngine {
 		this.#batchSize = batchSize;
 		this.#maxInflight = maxInflight;
 		this.#onTaskTimeout = onTaskTimeout ?? (() => {});
+		this.#onHardTaskTimeout = onHardTaskTimeout ?? (() => {});
 
 		// 创建共享管道组件
 		this.#sweeper = createSweeper({
@@ -83,6 +87,9 @@ export class PipelineEngine {
 					this.#settleTask(task, error, undefined);
 					this.#onTaskTimeout?.(task);
 				}
+			},
+			handleHardTaskTimeout: (task) => {
+				this.#onHardTaskTimeout?.(task);
 			},
 		});
 		this.#pump = createPumpQueue({

@@ -76,14 +76,20 @@ export function prepareTaskTimeout(task, metrics) {
  * schedule() 定期检查首任务是否超时，后续任务在成为首任务后才开始计时；
  * clear() 停止定时器。
  *
+ * 当首任务超时后其 sentinel token 迟迟未到达（sqlite3 进程可能卡死），
+ * 后续 inflight 任务会被永久阻塞。此函数通过硬超时兜底：
+ * 若已结算的超时任务在 timeout*2 后仍是 inflight 首任务，
+ * 则触发 handleHardTaskTimeout 让调用方有机会恢复（如重启进程）。
+ *
  * @param {{
  *   inflight: import("./inflightTracker.js").InflightTracker,
  *   sweepIntervalMs: number,
  *   handleTaskTimeout: (task: object) => void,
+ *   handleHardTaskTimeout?: (task: object) => void,
  * }} params
  * @returns {{ schedule: () => void, clear: () => void, getSweepTimer: () => (number | null) }}
  */
-export function createSweeper({ inflight, sweepIntervalMs, handleTaskTimeout }) {
+export function createSweeper({ inflight, sweepIntervalMs, handleTaskTimeout, handleHardTaskTimeout }) {
 	let sweepTimer = null;
 	const schedule = () => {
 		if (sweepTimer) return;
@@ -91,8 +97,16 @@ export function createSweeper({ inflight, sweepIntervalMs, handleTaskTimeout }) 
 			sweepTimer = null;
 			const now = performance.now();
 			const task = inflight.first;
-			if (task && now - task.startTime > task.timeout) {
-				handleTaskTimeout(task);
+			if (task) {
+				if (task.settled && task.timedout) {
+					// 任务已超时结算但仍卡在 inflight 首位置（sentinel 未到达）
+					const hardDeadline = task.startTime + task.timeout * 2;
+					if (now > hardDeadline) {
+						handleHardTaskTimeout?.(task);
+					}
+				} else if (now - task.startTime > task.timeout) {
+					handleTaskTimeout(task);
+				}
 			}
 			if (inflight.count > 0) {
 				schedule();
