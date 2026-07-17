@@ -39,6 +39,34 @@ if (files.length === 0) {
 	process.exit(1);
 }
 
+/**
+ * 根据 Node.js 版本返回合适的 --test-isolation 标志。
+ *
+ * 背景: Node.js 测试运行器默认按文件隔离启动子进程，通过 V8 structured clone
+ * 经 IPC 传回结果，存在偶发 Bug（nodejs/node#56802），数据损坏时抛出
+ * "Unable to deserialize cloned data"。设置 isolation=none 可禁用 IPC 路径。
+ *
+ * | Node.js 版本         | 标志                                                        |
+ * |----------------------|-------------------------------------------------------------|
+ * | < 22.8.0             | 不支持（如 v20），跳过                                      |
+ * | >= 22.8.0 且 < 24   | --experimental-test-isolation=none                          |
+ * | >= 24                | --test-isolation=none（稳定名）                             |
+ *
+ * @returns {string} 隔离标志（空字符串表示不添加）
+ */
+function getIsolationFlag() {
+	const parts = process.version.slice(1).split(".").map(Number);
+	const major = parts[0];
+	const minor = parts[1];
+
+	if (major < 22) return "";
+	if (major === 22 && minor < 8) return "";
+
+	return major >= 24 ? "--test-isolation=none" : "--experimental-test-isolation=none";
+}
+
+const isolationFlag = getIsolationFlag();
+
 // 转发额外参数（如 --test-update-snapshots）
 const extraArgs = process.argv.slice(2).join(" ");
 
@@ -46,7 +74,8 @@ const times = Number(process.env.TEST_TIMES ?? 1);
 
 for (let i = 0; i < times; i++) {
 	try {
-		execSync(`node ${extraArgs} --test ${files.map((f) => `"${f}"`).join(" ")}`, { stdio: "inherit", shell: true });
+		const cmd = `node ${extraArgs}${isolationFlag ? ` ${isolationFlag}` : ""} --test ${files.map((f) => `"${f}"`).join(" ")}`;
+		execSync(cmd, { stdio: "inherit", shell: true });
 	} catch {
 		// execSync 已经打印了子进程的错误输出
 		process.exit(1);
