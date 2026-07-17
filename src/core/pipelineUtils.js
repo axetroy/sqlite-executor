@@ -61,13 +61,14 @@ export function finalizePendingTasks(tasks, settle, pumpQueue, pendingStderr, in
  *
  * @param {object} task
  * @param {import("./metrics.js").Metrics | null | undefined} metrics
+ * @param {import("../utils/timeout.js").TimeoutDiagnostics} [diagnostics] - 任务队列上下文诊断信息
  * @returns {Error | null} 已创建的 TimeoutError，若任务已结算则返回 null
  */
-export function prepareTaskTimeout(task, metrics) {
+export function prepareTaskTimeout(task, metrics, diagnostics) {
 	if (task.settled) return null;
 	task.timedout = true;
 	metrics?.incrementTasksTimeout();
-	return createTimeoutError(task.timeout, task.sql, task.startedAt);
+	return createTimeoutError(task.timeout, task.sql, task.startedAt, diagnostics);
 }
 
 /**

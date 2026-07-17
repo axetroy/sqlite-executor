@@ -66,4 +66,28 @@ describe("createTimeoutError", () => {
 		assert.ok(err.message.includes("5000ms"));
 		assert.ok(err.message.includes("SELECT 1"));
 	});
+
+	test("传递 diagnostics 时错误消息包含诊断信息", () => {
+		const err = createTimeoutError(5000, "SELECT 1", undefined, {
+			queueSize: 5,
+			inflightCount: 1,
+			pendingFinalizeCount: 0,
+			totalPending: 6,
+		});
+		assert.ok(err.message.includes("diagnostics:"));
+		assert.ok(err.message.includes("queueSize=5"));
+		assert.ok(err.message.includes("inflightCount=1"));
+		assert.ok(err.message.includes("pendingFinalizeCount=0"));
+		assert.ok(err.message.includes("totalPending=6"));
+	});
+
+	test("传递部分 diagnostics 时缺失字段显示为 ?", () => {
+		const err = createTimeoutError(5000, "SELECT 1", undefined, {
+			queueSize: 3,
+		});
+		assert.ok(err.message.includes("queueSize=3"));
+		assert.ok(err.message.includes("inflightCount=?"));
+		assert.ok(err.message.includes("pendingFinalizeCount=?"));
+		assert.ok(err.message.includes("totalPending=?"));
+	});
 });

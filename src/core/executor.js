@@ -74,7 +74,10 @@ export class SQLiteExecutor {
 					`SQLite process stuck: task timed out but sentinel never arrived (${task.sql}). Restarting...`,
 				);
 				this.#handleProcessFailure(
-					new Error(`Hard timeout: task exceeded ${task.timeout}ms without sentinel arrival`),
+					new Error(
+						`SQLite hard timeout: task exceeded ${task.timeout}ms (2× timeout) without sentinel arrival; `
+						+ `SQL: ${task.sql}`,
+					),
 				);
 			},
 		});

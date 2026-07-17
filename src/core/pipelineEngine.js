@@ -82,7 +82,12 @@ export class PipelineEngine {
 			inflight: this.#inflight,
 			sweepIntervalMs: sweepInterval,
 			handleTaskTimeout: (task) => {
-				const error = prepareTaskTimeout(task, this.#metrics);
+				const error = prepareTaskTimeout(task, this.#metrics, {
+					queueSize: this.#queue.size,
+					inflightCount: this.#inflight.count,
+					pendingFinalizeCount: this.#pendingFinalizeTasks.size,
+					totalPending: this.pendingStatements,
+				});
 				if (error) {
 					this.#settleTask(task, error, undefined);
 					this.#onTaskTimeout?.(task);

@@ -1027,6 +1027,11 @@ describe("SQLiteExecutor", () => {
 						assert.match(error.message, /timed out after 1ms/);
 						assert.match(error.message, /started at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} UTC/);
 						assert.match(error.message, /deadline at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} UTC/);
+						assert.match(error.message, /diagnostics:/);
+						assert.match(error.message, /queueSize=\d+/);
+						assert.match(error.message, /inflightCount=\d+/);
+						assert.match(error.message, /pendingFinalizeCount=\d+/);
+						assert.match(error.message, /totalPending=\d+/);
 						return true;
 					},
 				);
