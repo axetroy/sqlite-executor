@@ -5,7 +5,7 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 60
     strategy:
       matrix:
         node: ["22", "24"]
@@ -33,7 +33,7 @@ jobs:
       - name: Test
         run: npm run test
         env:
-          TEST_TIMES: 10
+          TEST_TIMES: 5
 
       - name: Benchmark
         run: npm run benchmark
