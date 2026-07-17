@@ -42,12 +42,13 @@ if (files.length === 0) {
 // 转发额外参数（如 --test-update-snapshots）
 const extraArgs = process.argv.slice(2).join(" ");
 
-try {
-	execSync(
-		`node ${extraArgs} --test ${files.map((f) => `"${f}"`).join(" ")}`,
-		{ stdio: "inherit", shell: true },
-	);
-} catch {
-	// execSync 已经打印了子进程的错误输出
-	process.exit(1);
+const times = Number(process.env.TEST_TIMES ?? 1);
+
+for (let i = 0; i < times; i++) {
+	try {
+		execSync(`node ${extraArgs} --test ${files.map((f) => `"${f}"`).join(" ")}`, { stdio: "inherit", shell: true });
+	} catch {
+		// execSync 已经打印了子进程的错误输出
+		process.exit(1);
+	}
 }
