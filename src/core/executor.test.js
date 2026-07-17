@@ -1071,6 +1071,140 @@ describe("SQLiteExecutor", () => {
 		});
 	});
 
+	describe("超时错误隔离与后续执行", () => {
+		test("execute 超时后错误被正确捕获，后续 SQL 正常执行", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 1,
+			});
+			try {
+				const result = await settleOp(() => exec.execute("SELECT randomblob(100000000)"));
+				assert.equal(result.status, "rejected");
+				assert.ok(result.reason instanceof Error);
+				assert.match(result.reason.message, /timed out after/);
+
+				// 等待进程恢复（硬超时触发后自动重启）
+				await new Promise((r) => setTimeout(r, 500));
+
+				await exec.execute("CREATE TABLE IF NOT EXISTS after_exec_timeout (id INTEGER PRIMARY KEY, val TEXT)");
+				await exec.execute("INSERT INTO after_exec_timeout (val) VALUES (?)", ["ok"]);
+				const rows = await exec.query("SELECT * FROM after_exec_timeout");
+				assert.deepEqual(rows, [{ id: 1, val: "ok" }]);
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("query 超时后错误被正确捕获，后续 SQL 正常执行", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 1,
+			});
+			try {
+				const result = await settleOp(() => exec.query("SELECT randomblob(100000000) AS big"));
+				assert.equal(result.status, "rejected");
+				assert.ok(result.reason instanceof Error);
+				assert.match(result.reason.message, /timed out after/);
+
+				// 等待进程恢复
+				await new Promise((r) => setTimeout(r, 500));
+
+				await exec.execute("CREATE TABLE IF NOT EXISTS after_query_timeout (id INTEGER PRIMARY KEY, val TEXT)");
+				await exec.execute("INSERT INTO after_query_timeout (val) VALUES (?)", ["ok"]);
+				const rows = await exec.query("SELECT * FROM after_query_timeout");
+				assert.deepEqual(rows, [{ id: 1, val: "ok" }]);
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("stream 超时后错误被正确捕获，后续 SQL 正常执行", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 1,
+			});
+			try {
+				const streamFn = async () => {
+					for await (const _ of exec.stream("SELECT randomblob(100000000) AS big")) {
+						// noop
+					}
+				};
+				const result = await settleOp(streamFn);
+				assert.equal(result.status, "rejected");
+				assert.ok(result.reason instanceof Error);
+				assert.match(result.reason.message, /timed out after/);
+
+				// 等待进程恢复
+				await new Promise((r) => setTimeout(r, 500));
+
+				await exec.execute("CREATE TABLE IF NOT EXISTS after_stream_timeout (id INTEGER PRIMARY KEY, val TEXT)");
+				await exec.execute("INSERT INTO after_stream_timeout (val) VALUES (?)", ["ok"]);
+				const rows = await exec.query("SELECT * FROM after_stream_timeout");
+				assert.deepEqual(rows, [{ id: 1, val: "ok" }]);
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("超时后续多个正常 SQL 串行不中断", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 1,
+			});
+			try {
+				await settleOp(() => exec.execute("SELECT randomblob(100000000)"));
+
+				// 等待进程恢复
+				await new Promise((r) => setTimeout(r, 500));
+
+				await exec.execute("CREATE TABLE IF NOT EXISTS multi_after_timeout (id INTEGER PRIMARY KEY, val TEXT)");
+
+				const promises = [];
+				for (let i = 0; i < 20; i++) {
+					promises.push(
+						exec.execute("INSERT INTO multi_after_timeout (val) VALUES (?)", [`n${i}`]),
+					);
+				}
+				await Promise.all(promises);
+
+				const rows = await exec.query("SELECT val FROM multi_after_timeout ORDER BY id ASC");
+				assert.equal(rows.length, 20);
+				assert.deepEqual(
+					rows.map((r) => r.val),
+					new Array(20).fill(0).map((_, i) => `n${i}`),
+				);
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("超时后 stream 正常执行", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 1,
+			});
+			try {
+				await settleOp(() => exec.query("SELECT randomblob(100000000) AS big"));
+
+				// 等待进程恢复
+				await new Promise((r) => setTimeout(r, 500));
+
+				await exec.execute("CREATE TABLE IF NOT EXISTS stream_after_timeout (id INTEGER PRIMARY KEY, val TEXT)");
+				await exec.execute("INSERT INTO stream_after_timeout (val) VALUES ('a'), ('b'), ('c')");
+
+				const collected = [];
+				for await (const row of exec.stream("SELECT * FROM stream_after_timeout ORDER BY id ASC")) {
+					collected.push(row);
+				}
+				assert.equal(collected.length, 3);
+				assert.equal(collected[0].val, "a");
+				assert.equal(collected[2].val, "c");
+			} finally {
+				await exec.close();
+			}
+		});
+	});
+
 	describe("错误隔离", () => {
 		test("execute 非数组 params 抛出 TypeError", async () => {
 			await assert.rejects(
