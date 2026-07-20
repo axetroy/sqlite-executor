@@ -1010,9 +1010,11 @@ describe("SQLiteExecutor", () => {
 
 	describe("超时", () => {
 		test("statementTimeout 为非法值时抛出 TypeError", () => {
-			assert.throws(() => new SQLiteExecutor({ binary: SQLite3BinaryFile, statementTimeout: -1 }), /positive integer/);
-			assert.throws(() => new SQLiteExecutor({ binary: SQLite3BinaryFile, statementTimeout: 0 }), /positive integer/);
-			assert.throws(() => new SQLiteExecutor({ binary: SQLite3BinaryFile, statementTimeout: 1.5 }), /positive integer/);
+			assert.throws(() => new SQLiteExecutor({ binary: SQLite3BinaryFile, statementTimeout: -1 }), /non-negative integer/);
+			assert.throws(() => new SQLiteExecutor({ binary: SQLite3BinaryFile, statementTimeout: 1.5 }), /non-negative integer/);
+			// 0 是合法值（禁用超时）
+			const exec = new SQLiteExecutor({ binary: SQLite3BinaryFile, statementTimeout: 0 });
+			exec.close();
 		});
 
 		test("触发 SQL 超时后 tasksTimeout 指标递增", async () => {
@@ -1065,6 +1067,63 @@ describe("SQLiteExecutor", () => {
 					status: "fulfilled",
 					value: [{ value: 1 }],
 				});
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("statementTimeout 设为 0 时不触发超时（慢查询正常完成）", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 0,
+			});
+			try {
+				const result = await exec.query("SELECT COUNT(*) AS cnt FROM (WITH RECURSIVE counter(v) AS (VALUES(0) UNION ALL SELECT v+1 FROM counter WHERE v < 500000) SELECT v FROM counter)");
+				assert.ok(result[0].cnt > 0);
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("statementTimeout 设为 0 时即使存在超时指标也不递增", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 0,
+			});
+			try {
+				const result = await exec.query("SELECT 1 AS x");
+				assert.deepEqual(result, [{ x: 1 }]);
+				assert.equal(exec.metrics.tasksTimeout, 0);
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("per-statement timeout=0 覆盖全局超时（禁用该语句超时）", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 1,
+			});
+			try {
+				const result = await exec.query("SELECT COUNT(*) AS cnt FROM (WITH RECURSIVE counter(v) AS (VALUES(0) UNION ALL SELECT v+1 FROM counter WHERE v < 500000) SELECT v FROM counter)", [], { timeout: 0 });
+				assert.ok(result[0].cnt > 0);
+			} finally {
+				await exec.close();
+			}
+		});
+
+		test("per-statement timeout=0 不覆盖其他语句的正经常规模超时", async () => {
+			const exec = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				statementTimeout: 1,
+			});
+			try {
+				await exec.query("SELECT 1 AS x");
+				// 第二个语句应继续使用全局 timeout=1
+				await assert.rejects(
+					exec.execute("SELECT randomblob(100000000)"),
+					/timed out after/,
+				);
 			} finally {
 				await exec.close();
 			}

@@ -15,7 +15,10 @@ export interface SQLiteExecutorOptions {
 	database?: string;
 	/** 日志记录器 */
 	logger?: Logger;
-	/** 单条语句超时时间（毫秒），默认 30000 */
+	/**
+	 * 单条语句超时时间（毫秒），默认 30000。
+	 * 设为 0 可禁用超时。
+	 */
 	statementTimeout?: number;
 	/** 子进程崩溃后是否自动重启，默认 true */
 	autoRestart?: boolean;

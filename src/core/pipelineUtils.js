@@ -98,7 +98,7 @@ export function createSweeper({ inflight, sweepIntervalMs, handleTaskTimeout, ha
 			sweepTimer = null;
 			const now = performance.now();
 			const task = inflight.first;
-			if (task) {
+			if (task && task.timeout > 0) {
 				if (task.settled && task.timedout) {
 					// 任务已超时结算但仍卡在 inflight 首位置（sentinel 未到达）
 					const hardDeadline = task.startTime + task.timeout * 2;

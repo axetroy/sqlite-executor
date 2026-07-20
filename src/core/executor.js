@@ -244,8 +244,8 @@ export class SQLiteExecutor {
 	}
 
 	#normalizeTimeout(value) {
-		if (!Number.isInteger(value) || value <= 0) {
-			throw new TypeError("statementTimeout must be a positive integer");
+		if (!Number.isInteger(value) || value < 0) {
+			throw new TypeError("statementTimeout must be a non-negative integer");
 		}
 		return value;
 	}
