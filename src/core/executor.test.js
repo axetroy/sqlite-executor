@@ -1118,8 +1118,9 @@ describe("SQLiteExecutor", () => {
 				statementTimeout: 1,
 			});
 			try {
-				await exec.query("SELECT 1 AS x");
-				// 第二个语句应继续使用全局 timeout=1
+				// 第一条语句用 timeout=0 跳过超时（避免冷启动开销导致误超时）
+				await exec.query("SELECT 1 AS x", [], { timeout: 0 });
+				// 第二条语句不传 timeout，继续使用全局 timeout=1，应超时
 				await assert.rejects(
 					exec.execute("SELECT randomblob(100000000)"),
 					/timed out after/,
