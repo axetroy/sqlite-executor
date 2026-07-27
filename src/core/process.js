@@ -80,7 +80,7 @@ export class ProcessManager {
 			throw new Error(`sqlite3 binary not found: ${this.#binary}. Make sure sqlite3 is installed or provide a valid --binary / binary option.`);
 		}
 
-		const args = ["-json"];
+		const args = ["-json", '-batch'];
 		if (this.#readonly) args.push("-readonly");
 		if (this.#database) args.push(this.#database);
 		if (this.#database && this.#database !== ":memory:" && this.#initMode === "wal") {
