@@ -1362,7 +1362,7 @@ describe("SQLiteExecutor", () => {
 				await new Promise((r) => setTimeout(r, 500));
 
 				const slowResult = await settleOp(() =>
-					exec.query("SELECT randomblob(5000000) AS big", [], { timeout: 1 }),
+					exec.query("SELECT randomblob(100000000) AS big", [], { timeout: 1 }),
 				);
 				assert.equal(slowResult.status, "rejected");
 				assert.ok(slowResult.reason instanceof Error);
