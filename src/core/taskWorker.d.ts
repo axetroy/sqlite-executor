@@ -1,5 +1,5 @@
-import { Metrics } from "./metrics";
-import { Logger } from "./executor";
+import { Metrics } from "./metrics.js";
+import { Logger } from "./executor.js";
 
 /**
  * 单个 sqlite3 进程 Worker，支持管线化（pipelining）。

@@ -1,5 +1,5 @@
-import { Metrics } from './metrics'
-import {  ReaderPool } from './readerPool'
+import { Metrics } from './metrics.js'
+import {  ReaderPool } from './readerPool.js'
 
 /** 日志接口，可选实现多个级别 */
 export interface Logger {

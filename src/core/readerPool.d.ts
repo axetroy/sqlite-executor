@@ -1,4 +1,4 @@
-import { Logger } from "./executor";
+import { Logger } from "./executor.js";
 
 /**
  * 只读 Worker 连接池。

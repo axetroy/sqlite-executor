@@ -1,4 +1,4 @@
-import { Metrics } from "./metrics";
+import { Metrics } from "./metrics.js";
 
 /**
  * 将解析结果收集到任务的 rows 数组中。

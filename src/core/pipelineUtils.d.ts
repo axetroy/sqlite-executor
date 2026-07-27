@@ -1,6 +1,6 @@
-import { InflightTracker } from "./inflightTracker";
-import { Metrics } from "./metrics";
-import { Queue } from "./queue";
+import { InflightTracker } from "./inflightTracker.js";
+import { Metrics } from "./metrics.js";
+import { Queue } from "./queue.js";
 
 // ─── finalizePendingTasks ───
 

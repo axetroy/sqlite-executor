@@ -1,4 +1,4 @@
-import type { SQLTemplate } from "./normalize";
+import type { SQLTemplate } from "./normalize.js";
 
 /**
  * 使用预解析的模板替换参数，避免重新扫描 SQL。
