@@ -1,3 +1,6 @@
+import { Metrics } from './metrics'
+import {  ReaderPool } from './readerPool'
+
 /** 日志接口，可选实现多个级别 */
 export interface Logger {
 	log?(...messages: unknown[]): void;
@@ -33,7 +36,7 @@ export interface SQLiteExecutorOptions {
 	 * 运行时指标收集器。
 	 * 未指定时自动创建内部实例。
 	 */
-	metrics?: import("./metrics.js").Metrics;
+	metrics?: Metrics;
 }
 
 /** 单条语句的执行选项 */
@@ -72,10 +75,10 @@ export declare class SQLiteExecutor implements AsyncDisposable, Disposable {
 	 * - 启用读写分离时（poolSize > 0 且非 :memory:）返回 ReaderPool
 	 * - 否则返回 null
 	 */
-	get readerPool(): import("./readerPool.js").ReaderPool | null;
+	get readerPool(): ReaderPool | null;
 
 	/** 运行时指标收集器。 */
-	get metrics(): import("./metrics.js").Metrics;
+	get metrics(): Metrics;
 
 	/** 执行写操作（INSERT/UPDATE/CREATE 等），返回无行结果 */
 	execute(sql: string, params?: any[], options?: StatementOptions): Promise<void>;

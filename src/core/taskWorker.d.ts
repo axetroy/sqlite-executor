@@ -1,4 +1,5 @@
-import { Metrics } from "./metrics.js";
+import { Metrics } from "./metrics";
+import { Logger } from "./executor";
 
 /**
  * 单个 sqlite3 进程 Worker，支持管线化（pipelining）。
@@ -27,7 +28,7 @@ export class TaskWorker {
 		binary: string;
 		database: string;
 		statementTimeout: number;
-		logger?: import("./executor.js").Logger;
+		logger?: Logger;
 		name?: string;
 		initMode?: "wal" | "none";
 		batchSize?: number;

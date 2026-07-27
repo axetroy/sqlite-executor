@@ -1,5 +1,6 @@
-import { InflightTracker } from "./inflightTracker.js";
-import { Metrics } from "./metrics.js";
+import { InflightTracker } from "./inflightTracker";
+import { Metrics } from "./metrics";
+import { Queue } from "./queue";
 
 // ─── finalizePendingTasks ───
 
@@ -152,7 +153,7 @@ export function handleStderrChunk(chunk: string, options: StderrChunkOptions): v
 
 export interface PumpQueueOptions {
 	/** 待发送的任务队列 */
-	queue: import("./queue.js").Queue;
+	queue: Queue;
 	/** inflight 任务跟踪器 */
 	inflight: InflightTracker;
 	/** 子进程管理器（提供 draining 判断、write 写入、onDrained 注册） */
@@ -179,7 +180,7 @@ export interface RejectAllOptions {
 	/** inflight 任务跟踪器 */
 	inflight: InflightTracker;
 	/** 待发送的任务队列 */
-	queue: import("./queue.js").Queue;
+	queue: Queue;
 	/** pendingFinalize 任务集合 */
 	pendingFinalizeTasks: Set<object>;
 	/** 结算回调，形式为 (task, error, value) => void */

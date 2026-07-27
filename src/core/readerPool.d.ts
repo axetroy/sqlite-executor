@@ -1,3 +1,5 @@
+import { Logger } from "./executor";
+
 /**
  * 只读 Worker 连接池。
  *
@@ -20,7 +22,7 @@ export class ReaderPool {
 		database: string;
 		poolSize: number;
 		statementTimeout: number;
-		logger?: import("./executor.js").Logger;
+		logger?: Logger;
 	});
 
 	/** 池中 Worker 数量 */

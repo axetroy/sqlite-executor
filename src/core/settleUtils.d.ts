@@ -1,3 +1,5 @@
+import { Metrics } from "./metrics";
+
 /**
  * 将解析结果收集到任务的 rows 数组中。
  * 用于非流式查询，将子进程返回的 JSON 行追加到 task.rows。
@@ -31,6 +33,6 @@ export function settleTask(
 	task: any,
 	error: Error | null,
 	value: any,
-	metrics?: import("./metrics.js").Metrics | null,
+	metrics?: Metrics | null,
 	options?: { resetRowParser?: boolean },
 ): void;
