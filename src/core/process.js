@@ -84,8 +84,10 @@ export class ProcessManager {
 		if (this.#readonly) args.push("-readonly");
 		if (this.#database) args.push(this.#database);
 		if (this.#database && this.#database !== ":memory:" && this.#initMode === "wal") {
+			args.push("-cmd", ".out NUL");
 			args.push("-cmd", "PRAGMA journal_mode=WAL;");
 			args.push("-cmd", "PRAGMA busy_timeout=5000;");
+			args.push("-cmd", ".out stdout");
 		}
 
 		const proc = spawn(this.#binary, args, {
