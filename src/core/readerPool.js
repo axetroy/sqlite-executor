@@ -38,6 +38,8 @@ export class ReaderPool {
 				//   2. -cmd PRAGMAs 的 stdout 输出（如 [{"journal_mode":"wal"}]）泄漏到首个
 				//      查询任务的 rows 中（延迟启动导致 PRAGMA 输出在首任务入队后才到达）
 				initMode: "none",
+				// 以只读模式打开数据库，防止 reader 进程意外执行写入操作
+				readonly: true,
 			});
 			this.#workers.push(worker);
 		}

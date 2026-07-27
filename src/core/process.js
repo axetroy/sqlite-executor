@@ -21,14 +21,16 @@ export class ProcessManager {
 	/** @type {(() => void)[]} 通过 onDrained() 注册的回调，缓冲排空后一次触发 */
 	#drainCallbacks = [];
 	#onDrain;
+	#readonly = false;
 
 	/**
-	 * @param {{ binary?: string, database?: string, initMode?: "wal" | "none", onDrain?: () => void }} options
+	 * @param {{ binary?: string, database?: string, initMode?: "wal" | "none", readonly?: boolean, onDrain?: () => void }} options
 	 */
-	constructor({ binary, database, initMode = "wal", onDrain } = {}) {
+	constructor({ binary, database, initMode = "wal", readonly = false, onDrain } = {}) {
 		this.#binary = which(binary) ?? binary;
 		this.#database = database;
 		this.#initMode = initMode;
+		this.#readonly = readonly;
 		this.#onDrain = onDrain ?? (() => {});
 	}
 
@@ -79,6 +81,7 @@ export class ProcessManager {
 		}
 
 		const args = ["-json"];
+		if (this.#readonly) args.push("-readonly");
 		if (this.#database) args.push(this.#database);
 		if (this.#database && this.#database !== ":memory:" && this.#initMode === "wal") {
 			args.push("-cmd", "PRAGMA journal_mode=WAL;");

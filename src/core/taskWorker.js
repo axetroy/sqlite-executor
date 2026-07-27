@@ -48,13 +48,14 @@ export class TaskWorker {
 	 *   logger?: import("../index.js").Logger
 	 *   name?: string
 	 *   initMode?: "wal" | "none"
+	 *   readonly?: boolean
 	 *   batchSize?: number
 	 *   metrics?: import("./metrics.js").Metrics
 	 *   sweepInterval?: number
 	 *   onHardTaskTimeout?: (task: object) => void,
 	 * }} options
 	 */
-	constructor({ binary, database, statementTimeout, logger, name, initMode, batchSize = DEFAULT_BATCH_SIZE, maxInflight = DEFAULT_MAX_INFLIGHT, metrics, sweepInterval = 100, onHardTaskTimeout }) {
+	constructor({ binary, database, statementTimeout, logger, name, initMode, readonly, batchSize = DEFAULT_BATCH_SIZE, maxInflight = DEFAULT_MAX_INFLIGHT, metrics, sweepInterval = 100, onHardTaskTimeout }) {
 		this.#name = name ?? "worker";
 		this.#statementTimeout = statementTimeout;
 		this.#logger = logger;
@@ -65,7 +66,7 @@ export class TaskWorker {
 
 		// 创建共享管道组件
 		// ProcessManager 需在其他管道组件之前创建，因为 createPumpQueue 依赖它
-		this.#processManager = new ProcessManager({ binary, database, initMode });
+		this.#processManager = new ProcessManager({ binary, database, initMode, readonly });
 		this.#processManager.setOnDrainCallback(() => this.#pumpQueue());
 
 		this.#sweeper = createSweeper({
