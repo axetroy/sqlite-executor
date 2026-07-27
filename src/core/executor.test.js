@@ -1006,6 +1006,53 @@ describe("SQLiteExecutor", () => {
 				await sqlite2.close();
 			}
 		});
+
+		test("写入完成后通过 reader 能正确读取到数据", async () => {
+			const dbFile = path.join(os.tmpdir(), `rw-read-after-write-${Date.now()}.db`);
+			const sqlite = new SQLiteExecutor({
+				binary: SQLite3BinaryFile,
+				database: dbFile,
+				poolSize: 2,
+			});
+			try {
+				// 先建表
+				await sqlite.execute("CREATE TABLE IF NOT EXISTS rw_data (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)");
+
+				// 写入一批数据后立即读取——验证数据立即可见
+				await sqlite.execute("INSERT INTO rw_data VALUES (1, 'Alice', 95), (2, 'Bob', 87), (3, 'Charlie', 92)");
+				let rows = await sqlite.query("SELECT * FROM rw_data ORDER BY id ASC");
+				assert.equal(rows.length, 3);
+				assert.deepEqual(rows, [
+					{ id: 1, name: "Alice",   score: 95 },
+					{ id: 2, name: "Bob",     score: 87 },
+					{ id: 3, name: "Charlie", score: 92 },
+				]);
+
+				// 再写入后立即查询
+				await sqlite.execute("INSERT INTO rw_data (name, score) VALUES ('Diana', 100), ('Eve', 78)");
+				rows = await sqlite.query("SELECT * FROM rw_data ORDER BY id ASC");
+				assert.equal(rows.length, 5);
+				assert.deepEqual(rows, [
+					{ id: 1, name: "Alice",   score: 95 },
+					{ id: 2, name: "Bob",     score: 87 },
+					{ id: 3, name: "Charlie", score: 92 },
+					{ id: 4, name: "Diana",   score: 100 },
+					{ id: 5, name: "Eve",     score: 78 },
+				]);
+
+				// 条件查询和聚合查询也立即正确
+				const filtered = await sqlite.query("SELECT * FROM rw_data WHERE score >= 90 ORDER BY id ASC");
+				assert.equal(filtered.length, 3);
+				const agg = await sqlite.query("SELECT COUNT(*) AS cnt, AVG(score) AS avg_score FROM rw_data");
+				assert.equal(agg[0].cnt, 5);
+				assert.equal(agg[0].avg_score, 90.4);
+			} finally {
+				await sqlite.close();
+				for (const suffix of ["", "-wal", "-shm"]) {
+					try { fs.unlinkSync(dbFile + suffix); } catch {}
+				}
+			}
+		});
 	});
 
 	describe("超时", () => {
