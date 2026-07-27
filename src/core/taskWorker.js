@@ -37,6 +37,9 @@ export class TaskWorker {
 	/** 多任务非 WAL batch 中无法立即归因的 stderr 缓冲 */
 	#pendingStderr = [];
 
+	/** 是否已启动子进程（延迟启动标记） */
+	#processStarted = false;
+
 	/**
 	 * @param {{
 	 *   binary: string
@@ -102,7 +105,15 @@ export class TaskWorker {
 				rejectAll: (error) => this.#rejectAll(error),
 			});
 		});
-		this.#startProcess();
+
+		// 延迟启动进程：不在构造函数中启动，而是在第一次 enqueue 时再启动。
+		// 原因：当 ReaderPool 的多个 TaskWorker 与 SQLiteExecutor 的 writer
+		// 几乎同时启动时，所有进程都会通过 -cmd 执行 PRAGMA journal_mode=WAL;
+		// 该 PRAGMA 需要 EXCLUSIVE 锁，而每个进程在打开数据库时已持有 SHARED 锁，
+		// 导致双方均无法获取 EXCLUSIVE 锁，出现 "database is locked" 竞争条件。
+		// 延迟启动后，reader 进程启动时 writer 已完成 WAL 模式初始化，此时即使
+		// reader 的 -cmd 再次执行 PRAGMA journal_mode=WAL; 也是无害的 no-op。
+		// this.#startProcess() — 移到 enqueue 中调用
 	}
 
 	get name() {
@@ -123,6 +134,13 @@ export class TaskWorker {
 	 * @param {object} config
 	 */
 	enqueue(config) {
+		// 延迟启动：首次入队时才启动子进程。
+		// 避免与同一数据库上的其他 sqlite3 进程（如 SQLiteExecutor 的 writer）
+		// 同时启动时两者均通过 -cmd 执行 PRAGMA journal_mode=WAL;
+		// 导致 EXCLUSIVE 锁竞争而出现 "database is locked" 错误。
+		if (!this.#processStarted) {
+			this.#startProcess();
+		}
 		const task = {
 			kind: config.kind,
 			sql: config.sql,
@@ -148,8 +166,11 @@ export class TaskWorker {
 		return this.#sweeper?.getSweepTimer() ?? null;
 	}
 
-	/** 测试用：获取底层子进程引用。 */
+	/** 测试用：获取底层子进程引用。若进程尚未启动，则触发延迟启动。 */
 	get _process() {
+		if (!this.#processManager.process && !this.#processStarted) {
+			this.#startProcess();
+		}
 		return this.#processManager.process;
 	}
 
@@ -164,6 +185,9 @@ export class TaskWorker {
 	// ---- 内部 ----
 
 	#startProcess() {
+		if (this.#processStarted) return;
+		this.#processStarted = true;
+
 		const proc = this.#processManager.start();
 
 		proc.stdout.on("data", (chunk) => {

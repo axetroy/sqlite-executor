@@ -29,7 +29,15 @@ export class ReaderPool {
 				logger,
 				metrics,
 				name: `reader-${i}`,
-				initMode: database !== ":memory:" ? "wal" : "none",
+				// 使用 initMode="none"：reader 进程由 TaskWorker 延迟启动
+				// （首次 enqueue 时），此时 SQLiteExecutor 的 writer 已完成 WAL 模式初始化。
+				// reader 的 sqlite3 进程会自动从数据库文件头检测到 WAL 模式并沿用。
+				// 使用 "none" 可以避免：
+				//   1. 与 writer 同时启动时 -cmd PRAGMA journal_mode=WAL; 的 EXCLUSIVE 锁竞争
+				//      （"database is locked" 错误）
+				//   2. -cmd PRAGMAs 的 stdout 输出（如 [{"journal_mode":"wal"}]）泄漏到首个
+				//      查询任务的 rows 中（延迟启动导致 PRAGMA 输出在首任务入队后才到达）
+				initMode: "none",
 			});
 			this.#workers.push(worker);
 		}
