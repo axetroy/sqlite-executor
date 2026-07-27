@@ -52,19 +52,19 @@ function getSQLte3URL() {
 	const arch = process.arch;
 	switch (process.platform) {
 		case "win32": {
-			return "https://www.sqlite.org/2025/sqlite-tools-win-x64-3490100.zip";
+			return "https://sqlite.org/2026/sqlite-tools-win-x64-3530400.zip";
 		}
 		case "darwin": {
 			// macOS ARM64 (Apple Silicon) 可通过 Rosetta 2 运行 x64 二进制文件。
 			// sqlite.org 并非所有版本都提供 osx-arm64 构建（例如 3490100 就没有），
 			// 因此统一回退到 x64，通过 Rosetta 2 兼容运行。
-			return "https://www.sqlite.org/2025/sqlite-tools-osx-x64-3490100.zip";
+			return "https://sqlite.org/2026/sqlite-tools-osx-x64-3530400.zip";
 		}
 		case "linux": {
 			if (arch === "arm64") {
 				throw new Error("This version of SQLite does not provide precompiled Linux arm64 binaries. Please install sqlite3 via your package manager (apt, yum, etc.)");
 			}
-			return "https://www.sqlite.org/2025/sqlite-tools-linux-x64-3490100.zip";
+			return "https://sqlite.org/2026/sqlite-tools-linux-x64-3530400.zip";
 		}
 		default: {
 			throw new Error("Unsupported platform: " + process.platform);
