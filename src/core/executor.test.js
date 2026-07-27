@@ -943,17 +943,28 @@ describe("SQLiteExecutor", () => {
 			try {
 				await sqlite.execute("CREATE TABLE IF NOT EXISTS rw_big (id INTEGER PRIMARY KEY, val TEXT)");
 
-				let readResolved = false;
-				const slowWrite = sqlite.execute("INSERT INTO rw_big SELECT value, hex(randomblob(512)) FROM generate_series(1, 30000)");
+				// 启动耗时写入（writer 进程），timeout=0 禁用 SQL 超时，
+				// 确保在任何机器上写入都能完成，不因超时被杀死。
+				const slowWrite = sqlite.execute(
+					"INSERT INTO rw_big SELECT value, hex(randomblob(512)) FROM generate_series(1, 30000)",
+					[],
+					{ timeout: 0 },
+				);
 
-				await new Promise((r) => setTimeout(r, 30));
+				// 不等写入完成，立即通过 reader pool 发送读取请求。
+				// 使用 Promise.race 让读写两个 Promise 直接赛跑，
+				// 验证读先于写返回 —— 不依赖任何定时等待或机器性能。
+				const readQuery = sqlite.query("SELECT COUNT(*) AS cnt FROM rw_big");
 
-				const rows = await sqlite.query("SELECT COUNT(*) AS cnt FROM rw_big");
-				readResolved = true;
-				assert.equal(rows[0].cnt, 0);
+				const winner = await Promise.race([
+					readQuery.then((rows) => ({ winner: "read", rows })),
+					slowWrite.then(() => ({ winner: "write" })),
+				]);
+
+				assert.equal(winner.winner, "read", "读取应在写入完成前返回，证明走不同进程");
+				assert.equal(winner.rows[0].cnt, 0, "写入未完成时 reader 应看到空表");
 
 				await slowWrite;
-				assert.ok(readResolved, "读取应在写入完成前返回，证明走不同进程");
 			} finally {
 				await sqlite.close();
 			}
