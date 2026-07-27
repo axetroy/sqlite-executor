@@ -29,7 +29,7 @@ export class ReaderPool {
 				logger,
 				metrics,
 				name: `reader-${i}`,
-				initMode: database !== ":memory:" ? "none" : "none",
+				initMode: database !== ":memory:" ? "wal" : "none",
 			});
 			this.#workers.push(worker);
 		}
